@@ -26,8 +26,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo ">> sync $ROOT -> $REMOTE:$BUILD_DIR"
 rsync -az --delete -e "${SSH[*]}" \
-    --exclude '.git/' --exclude 'build/' --exclude '.gradle/' --exclude '.kotlin/' \
-    --exclude 'local.properties' --exclude 'CLAUDE.md' --exclude '.claude/' \
+    --exclude '.git/' --filter=':- .gitignore' \
     "$ROOT/" "$REMOTE:$BUILD_DIR/"
 
 echo ">> gradle ${TASKS[*]}"
