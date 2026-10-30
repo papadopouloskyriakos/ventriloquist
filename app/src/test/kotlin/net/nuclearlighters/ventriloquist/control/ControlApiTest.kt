@@ -25,6 +25,10 @@ class ControlApiTest {
             return mapOf("seconds" to seconds)
         }
         override fun restore() = mapOf<String, Any?>("errors" to emptyList<String>()).also { calls.add("restore") }
+        override fun setMode(mode: String) = mapOf<String, Any?>("override" to mode).also { calls.add("mode $mode") }
+        override fun configure(update: Map<String, Any?>) =
+            mapOf<String, Any?>("updated" to update.keys.sorted()).also { calls.add("config ${update.keys.sorted()}") }
+        override fun stepLatency(deltaMs: Int) = mapOf<String, Any?>("film_latency_ms" to deltaMs).also { calls.add("step $deltaMs") }
     }
 
     private fun request(method: String, path: String, body: String = "", auth: String? = "Bearer $token") =
@@ -101,5 +105,42 @@ class ControlApiTest {
         assertFalse(ControlApi.authorized("Bearer ${token}x", token))
         assertFalse(ControlApi.authorized("Bearer", token))
         assertFalse(ControlApi.authorized(null, token))
+    }
+
+    @Test
+    fun routesM2Endpoints() {
+        val backend = FakeBackend(token)
+        val api = ControlApi(backend)
+        for (mode in listOf("auto", "off", "film", "music")) {
+            assertEquals(200, api.handle(request("POST", "/mode", """{"mode":"$mode"}""")).status)
+        }
+        assertEquals(200, api.handle(request("POST", "/config", """{"vban_port":6980,"vban_host":"x"}""")).status)
+        assertEquals(200, api.handle(request("POST", "/latency/step", """{"ms":-20}""")).status)
+        assertEquals(
+            listOf("mode auto", "mode off", "mode film", "mode music", "config [vban_host, vban_port]", "step -20"),
+            backend.calls,
+        )
+    }
+
+    @Test
+    fun validatesM2Arguments() {
+        val backend = FakeBackend(token)
+        val api = ControlApi(backend)
+        assertEquals(400, api.handle(request("POST", "/mode", """{"mode":"loud"}""")).status)
+        assertEquals(400, api.handle(request("POST", "/mode", """{"mode":1}""")).status)
+        assertEquals(400, api.handle(request("POST", "/config", "{}")).status)
+        assertEquals(400, api.handle(request("POST", "/latency/step", """{"ms":1001}""")).status)
+        assertEquals(405, api.handle(request("GET", "/mode")).status)
+        assertTrue(backend.calls.isEmpty())
+    }
+
+    @Test
+    fun aRefusedModeChangeIsAConflict() {
+        val api = ControlApi(object : ControlBackend by FakeBackend(token) {
+            override fun setMode(mode: String): Map<String, Any?> = throw ApiException(409, "quiet hours")
+        })
+        val r = api.handle(request("POST", "/mode", """{"mode":"film"}"""))
+        assertEquals(409, r.status)
+        assertEquals("quiet hours", Json.parseObject(r.body)["error"])
     }
 }

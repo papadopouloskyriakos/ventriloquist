@@ -17,6 +17,15 @@ interface ControlBackend {
     fun setTvMute(on: Boolean): Map<String, Any?>
     fun captureTest(seconds: Int): Map<String, Any?>
     fun restore(): Map<String, Any?>
+
+    /** Override: "auto", "off", "film" or "music". */
+    fun setMode(mode: String): Map<String, Any?>
+
+    /** Same keys as the configuration broadcast. */
+    fun configure(update: Map<String, Any?>): Map<String, Any?>
+
+    /** Moves film_latency_ms by [deltaMs] (stored; applied at once in film mode). */
+    fun stepLatency(deltaMs: Int): Map<String, Any?>
 }
 
 /** A request the backend refuses, with the HTTP status to answer. */
@@ -64,6 +73,18 @@ class ControlApi(private val backend: ControlBackend) {
             "POST /capture-test" ->
                 ok(backend.captureTest(intField(body(r), "seconds", 1..MAX_CAPTURE_TEST_S)))
             "POST /restore" -> ok(backend.restore())
+            "POST /mode" -> {
+                val mode = stringField(body(r), "mode")
+                if (mode !in MODES) throw IllegalArgumentException("'mode' must be one of ${MODES.joinToString(", ")}")
+                ok(backend.setMode(mode))
+            }
+            "POST /config" -> {
+                val update = body(r)
+                if (update.isEmpty()) throw IllegalArgumentException("send a JSON object with configuration keys")
+                ok(backend.configure(update))
+            }
+            "POST /latency/step" ->
+                ok(backend.stepLatency(intField(body(r), "ms", -MAX_LATENCY_STEP_MS..MAX_LATENCY_STEP_MS)))
             else -> error(404, "no such endpoint")
         }
     }
@@ -71,6 +92,8 @@ class ControlApi(private val backend: ControlBackend) {
     companion object {
         const val MAX_LATENCY_MS = 5000
         const val MAX_CAPTURE_TEST_S = 30
+        const val MAX_LATENCY_STEP_MS = 1000
+        val MODES = listOf("auto", "off", "film", "music")
 
         val ROUTES: Map<String, Set<String>> = mapOf(
             "/status" to setOf("GET"),
@@ -78,6 +101,9 @@ class ControlApi(private val backend: ControlBackend) {
             "/tv-mute" to setOf("POST"),
             "/capture-test" to setOf("POST"),
             "/restore" to setOf("POST"),
+            "/mode" to setOf("POST"),
+            "/config" to setOf("POST"),
+            "/latency/step" to setOf("POST"),
         )
 
         fun authorized(header: String?, token: String): Boolean {

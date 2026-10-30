@@ -56,8 +56,13 @@ Two things make this hard:
   channels minus one, data type, 16-byte stream name, 32-bit frame counter) followed by
   interleaved little-endian PCM, at most 256 frames per datagram. One UDP socket, one
   destination, no discovery.
-- Pacing follows the source clock: each capture read is sent as a bounded run of packets at the
-  sample rate, never as a burst, so a slow network cannot grow an unbounded queue in the app.
+- Pacing follows the source clock: each capture read (20 ms) becomes a bounded run of packets,
+  split evenly at no more than 256 frames each, and packet k leaves when the frames before it
+  are due at the sample rate, counted from the first read, never as a burst. Nothing is queued:
+  a slow network cannot grow a queue in the app. After a stall of more than 100 ms the sender
+  re-anchors at the present instead of catching up in a burst. The 32-bit frame counter counts
+  packets. Send errors are counted and reported, never thrown, so a network fault cannot stop
+  capture.
 - The Music Assistant receiver has to match: port (default 6980), stream name, sender address,
   PCM format, sample rate, channel count. It ignores packets while nothing is playing the
   source. Ventriloquist sends only while house mode is on (see Control).
@@ -119,18 +124,112 @@ Ventriloquist silences them from the box, so nothing on the TV has to change:
   the TV, which is silent in house mode. House volume belongs to Music Assistant (its group
   volume, or a home-automation slider).
 
+### House mode: film and music
+
+House mode is a state: capture running, the stream playing on a Music Assistant player or
+group, TV speakers muted, surround output forced to stereo PCM, and (in film mode) the latency
+parameter set. It comes in two kinds, because a film and an album want different things from
+the same speakers:
+
+| | Film | Music |
+|---|---|---|
+| Plays on | `film_player_id` (the speakers around the TV) | `music_player_id` (any group, other rooms too) |
+| HDMI latency | `film_latency_ms`, the measured house delay | 0: there is no picture to wait for |
+| Rear speakers | `surround_player_ids` switched to the `surround` output channel, `sync_adjust` set to `surround_sync_adjust_ms` | unchanged |
+| TV speakers | muted | muted |
+
+**Matrix surround.** A stereo film soundtrack carries its surround information the way Dolby
+Surround and Pro Logic encode it: what should come from behind is in antiphase between left and
+right. A Pro Logic style decoder recovers it as the difference of the two channels, in which
+dialogue (centred, so identical in both) cancels out. Music Assistant's per-player `surround`
+output channel does that on the Music Assistant side: the player receives 0.5 L minus 0.5 R,
+band limited to 100 Hz to 7 kHz like the surround channel of the matrix, while the front
+speakers keep full stereo. Ventriloquist only switches the chosen rear players to that mode for
+the film and back afterwards; the decoding is Music Assistant's. The `sync_adjust` step holds
+the rear speakers back slightly, like the delay a matrix decoder puts on its surround channel:
+the rear sound then arrives after the front, so whatever dialogue leaks into the difference
+signal is still heard from the front. For Squeezelite players a positive `sync_adjust` plays
+earlier, so the default `-15` ms plays the rear 15 ms later; check the sign for other player
+types. Stock Music Assistant
+builds offer only stereo, left, right and mono; with them `surround_player_ids` stays empty.
+
+**Sequences.** Film start: record and set each rear player's channels and sync adjustment; set
+the latency; mute the TV; surround output to PCM; start capture and VBAN; play `source_uri` on
+the film player. Music start: the same without the rear players and with latency 0. Stop: stop
+the playing player; stop capture; put the rear players back; then latency, surround output and
+TV volume (the TV speakers come back last, once the picture is no longer delayed). A switch from
+film to music (or back) moves only the Music Assistant side: the old player stops, the rear
+players go back, the new player starts, while capture keeps running and the TV stays muted, so
+the TV speakers do not blip in between. If any step of a start fails, everything done so far is
+put back and the error is reported.
+
+Music Assistant is driven over its HTTP API: `POST {ma_url}/api` with `Authorization: Bearer
+{ma_token}` and `{"message_id", "command", "args"}`; the reply body is the command's result. A
+status other than 200, or an object with `error_code`, is a failure. Commands used:
+`config/players/get` and `config/players/save` (rear players), `player_queues/play_media` with
+`option: replace`, `players/cmd/stop`.
+
+### Automatic mode
+
+A watcher feeds a small state machine once a second and whenever the platform reports a change:
+
+- **Inputs:** the active media sessions and their playback state (through a notification
+  listener grant, which the app needs only for `MediaSessionManager.getActiveSessions`; it reads
+  no notifications), the active audio players' usage and content type
+  (`AudioManager.registerAudioPlaybackCallback`), and screen on or off.
+- **Playing, paused, idle:** a session that plays (or buffers) means playing; without one, a
+  media player that is known to be started means playing; a paused session whose player still
+  exists means paused; anything else is idle.
+- **Film or music:** a package in `film_packages` means film, a package in `music_packages`
+  means music; otherwise music content means music and everything else (movie, speech, unknown)
+  means film.
+- **Rules:** start `start_debounce_s` after playback started, with the screen on; stay through a
+  pause; stop `stop_delay_s` after playback ended, or after the screen went off; switch film and
+  music when the kind of playback changes (debounced like a start). Nothing starts or switches
+  inside the quiet hours `quiet_start` to `quiet_end` (local time, across midnight allowed); a
+  mode already running finishes by the normal stop rule. After a failed start the machine waits
+  five minutes, or until playback ends and starts again.
+- **Override:** `auto` (default) follows the rules; `off` stops at once and starts nothing;
+  `film` and `music` run that mode whatever plays, until the override changes. A manual start is
+  refused inside quiet hours, and a manual mode falls back to `auto` when the screen has been
+  off for the stop delay, so a forgotten override cannot keep the TV muted.
+
+The machine is plain Kotlin with an injected clock, so every rule is covered by unit tests.
+
 ### Control
 
-House mode is a state: capture running, stream playing on the chosen player group, TV speakers
-muted, latency parameter set, surround output forced to stereo PCM. A home-automation system
-flips it. The app offers a small local HTTP endpoint (status, start, stop) and equivalent intents
-for `adb shell am`, and it restarts its idle service at boot so the endpoint is reachable.
+The app offers a small local HTTP endpoint (port 8770, a bearer token, JSON; the request list is
+in the README) and restarts its idle service at boot so the endpoint is reachable. The server is
+a plain `ServerSocket` with a strict parser: one request per connection, Content-Length bodies
+only, header block and body sizes capped, a small worker pool with a bounded queue.
+
+The first configuration, which includes the token, cannot go through the token-protected
+endpoint. It arrives as an explicit broadcast sent with `adb shell am broadcast`, carrying the
+JSON (or its base64). The receiver is exported but requires `android.permission.DUMP`: the adb
+shell holds it, ordinary apps cannot get it, so only adb or root can reach the receiver. An
+update is all or nothing: one unknown key or bad value rejects it, and the reply says which.
 
 Capture runs only while house mode is on. The consent, however, is obtained once per boot: the
 idle service asks for it at boot and keeps the resulting projection, and house mode then opens
 and closes the actual capture on that projection as often as needed. This keeps the box idle
 (no capture, no packets) outside house mode, which matters on a device with little memory, and
-it still starts instantly because no dialog appears when house mode is switched on.
+it still starts instantly because no dialog appears when house mode is switched on. Opening the
+consent screen from the background at boot needs the "display over other apps" app-op, granted
+once over adb.
+
+### Crash-safe restore
+
+Every change Ventriloquist makes, on the box (HDMI latency, HDMI volume, surround output) and in
+Music Assistant (rear players' channels and sync adjustment, which player plays the source),
+is first recorded in a ledger: one JSON object per side in SharedPreferences, written
+synchronously, before the change is made. If the record cannot be written, the change is not
+made. The first recorded original wins, so repeated changes still restore to the state before
+Ventriloquist touched anything.
+
+The ledgers are replayed on stop, on `POST /restore`, at boot, and when the service starts with
+a ledger still dirty (after a crash or a kill). The box side is restored at once; the Music
+Assistant side follows over the network and is retried every minute while it fails, each item
+staying recorded until it has been put back.
 
 ## Latency model
 
@@ -169,11 +268,15 @@ Music Assistant side (queue strategy, player start scheduling), not in the app.
 
 ## Roadmap
 
-1. Skeleton: builds, installs, idle foreground service, status screen. (this repository state)
-2. Capture: consent flow, `AudioRecord` on playback capture, level meter on the status screen.
-3. Send: VBAN sender with source-clock pacing, settings for destination and stream name.
+1. Skeleton: builds, installs, idle foreground service, status screen. Done.
+2. Capture: consent flow, `AudioRecord` on playback capture, level measurement. Done.
+3. Send: VBAN sender with source-clock pacing, destination and stream name from configuration.
+   Done.
 4. Latency module: read and set the Shield HDMI latency parameter; surround-to-PCM toggle;
-   HDMI volume to zero with persisted restore; measurement procedure with the Shield's test
-   clip.
-5. Control: HTTP endpoint and intents; boot start; home-automation recipe.
-6. Release: signing key outside the repository, versioned builds, install notes.
+   HDMI volume to zero with persisted restore. Done; the measurement procedure with the
+   Shield's test clip is next.
+5. Control: HTTP endpoint, ADB configuration broadcast, boot start, automatic film and music
+   modes with quiet hours. Done; a home-automation recipe is next.
+6. Release: signing key outside the repository, versioned builds, install notes. Done.
+7. First device run: confirm capture at unit gain with the HDMI volume at zero, the HAL's
+   latency ceiling, and how constant the house delay is between sessions.
