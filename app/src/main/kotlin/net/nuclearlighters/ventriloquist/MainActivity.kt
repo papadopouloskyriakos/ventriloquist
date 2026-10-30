@@ -283,7 +283,7 @@ class MainActivity : Activity() {
 
     private fun chooseQuiet() {
         val c = ConfigStore.get(this)
-        val ranges = listOf("22:00" to "08:00", "23:00" to "08:00", "23:00" to "09:00", "00:00" to "08:00")
+        val ranges = listOf("22:00" to "08:00", "23:00" to "08:00", "23:00" to "09:00")
         val values = (ranges + if ((c.quietStart to c.quietEnd) in ranges) emptyList() else listOf(c.quietStart to c.quietEnd))
         val labels = values.map { (s, e) -> if (s == e) getString(R.string.quiet_off) else getString(R.string.quiet_range, s, e) }
         choose(R.string.row_quiet, labels, values, c.quietStart to c.quietEnd) { (s, e) ->

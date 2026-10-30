@@ -165,9 +165,9 @@ The machine is plain Kotlin with an injected clock, so every rule is covered by 
 The launcher opens a screen made for a remote: a status line and one row per setting, each a
 button whose choices open in a dialog. Rows: Sound (home speakers or TV speakers), Speakers
 (the Music Assistant players and groups, fetched live), Volume buttons, Volume step, Maximum
-volume, TV sound while the speakers play, Quiet hours (fixed choices, never off), Back to the
-TV after playback stops, Capture permission. Addresses and tokens are not shown; they are set
-at provisioning time.
+volume, TV sound while the speakers play, Quiet hours (fixed choices, none starting later than
+23:00, never off), Back to the TV after playback stops, Capture permission. Addresses and tokens
+are not shown; they are set at provisioning time.
 
 ### Home Assistant
 
