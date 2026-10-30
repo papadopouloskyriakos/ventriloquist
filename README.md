@@ -17,9 +17,11 @@ speakers then match.
 
 ## Status
 
-Pre-alpha. This repository holds the project skeleton: it builds, installs, shows a status
-screen and runs an idle foreground service. **Nothing captures or sends audio yet.**
-See [docs/DESIGN.md](docs/DESIGN.md) for the design and the roadmap.
+Pre-alpha. The app holds the capture consent in a foreground service, reads and sets the
+Shield's HDMI latency parameter, mutes and restores the HDMI volume, switches the surround
+output to PCM and back (all crash-safe), measures capture levels, and is driven by a
+token-protected local HTTP endpoint and an ADB configuration broadcast. **It does not send
+audio yet.** See [docs/DESIGN.md](docs/DESIGN.md) for the design and the roadmap.
 
 ## How it works
 

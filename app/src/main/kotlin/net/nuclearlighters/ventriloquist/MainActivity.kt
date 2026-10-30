@@ -9,15 +9,21 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.widget.TextView
 
-/** Status screen. OK on the remote starts or stops the idle service. */
+/** Status screen. OK on the remote asks for the capture consent when none is held. */
 class MainActivity : Activity() {
 
     private lateinit var status: TextView
+    private val refresh = object : Runnable {
+        override fun run() {
+            render()
+            status.postDelayed(this, 2000)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         status = TextView(this).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.rgb(0x1F, 0x29, 0x33))
             gravity = Gravity.CENTER
@@ -26,38 +32,51 @@ class MainActivity : Activity() {
             isFocusable = true
         }
         setContentView(status)
+        startForegroundService(
+            Intent(this, VentriloquistService::class.java).setAction(VentriloquistService.ACTION_START),
+        )
     }
 
     override fun onResume() {
         super.onResume()
-        render()
+        status.post(refresh)
+    }
+
+    override fun onPause() {
+        status.removeCallbacks(refresh)
+        super.onPause()
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
-            toggleService()
+            if (VentriloquistService.instance?.status()?.get("projection_ready") != true) {
+                startActivity(Intent(this, ConsentActivity::class.java))
+            }
+            render()
             return true
         }
         return super.onKeyUp(keyCode, event)
     }
 
-    private fun toggleService() {
-        val intent = Intent(this, VentriloquistService::class.java)
-        if (VentriloquistService.running) {
-            intent.action = VentriloquistService.ACTION_STOP
-            startService(intent)
-        } else {
-            intent.action = VentriloquistService.ACTION_START
-            startForegroundService(intent)
-        }
-        status.postDelayed({ render() }, 300)
-    }
-
     private fun render() {
         val version = packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
-        val state = getString(
-            if (VentriloquistService.running) R.string.state_running else R.string.state_stopped,
-        )
-        status.text = getString(R.string.status_template, version, state)
+        val s = VentriloquistService.instance?.status()
+        status.text = if (s == null) {
+            getString(R.string.status_starting, version)
+        } else {
+            @Suppress("UNCHECKED_CAST")
+            val capture = s["capture"] as Map<String, Any?>
+            getString(
+                R.string.status_template,
+                version,
+                s["consent"].toString(),
+                s["mode"].toString(),
+                if (capture["running"] == true) getString(R.string.yes) else getString(R.string.no),
+                s["hdmi_latency_ms"]?.toString() ?: "?",
+                "${s["hdmi_volume"]} / ${s["hdmi_volume_max"]}",
+                if (s["dirty"] == true) getString(R.string.yes) else getString(R.string.no),
+                s["last_error"]?.toString() ?: "-",
+            )
+        }
     }
 }

@@ -2,8 +2,11 @@
 <resources>
     <string name="app_name">Ventriloquist</string>
     <string name="notification_channel">Ventriloquist</string>
-    <string name="notification_idle">Idle. Nothing is captured or sent.</string>
-    <string name="status_template">Ventriloquist %1$s\n\nService: %2$s\n\nNothing captures or sends audio yet.\nPress OK to start or stop the idle service.</string>
-    <string name="state_running">running</string>
-    <string name="state_stopped">stopped</string>
+    <string name="notification_idle">Idle. Capture consent needed.</string>
+    <string name="notification_ready">Idle. Capture consent held; nothing is sent.</string>
+    <string name="notification_house">House mode: sending TV audio.</string>
+    <string name="status_starting">Ventriloquist %1$s\n\nStarting the service.</string>
+    <string name="status_template">Ventriloquist %1$s\n\nCapture consent: %2$s\nMode: %3$s\nCapturing: %4$s\nHDMI latency: %5$s ms\nHDMI volume: %6$s\nChanges to restore: %7$s\nLast error: %8$s\n\nPress OK to ask for the capture consent.</string>
+    <string name="yes">yes</string>
+    <string name="no">no</string>
 </resources>

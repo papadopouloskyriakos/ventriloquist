@@ -9,10 +9,15 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Android 14 and later: the idle service before any consent exists. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Allowed once over adb (appops set ... SYSTEM_ALERT_WINDOW allow) so that the service
+         can open the consent screen at boot from the background. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Granted once over adb (pm grant); lets house mode switch surround output to PCM. -->
     <uses-permission
         android:name="android.permission.WRITE_SECURE_SETTINGS"
@@ -40,16 +45,42 @@
             </intent-filter>
         </activity>
 
+        <!-- Exported so that `adb shell am start` can open it; it only shows the system's own
+             consent dialog, whose result goes to this app's service. -->
+        <activity
+            android:name=".ConsentActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".VentriloquistService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
+            android:foregroundServiceType="mediaProjection|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the local house-audio control endpoint reachable between sessions" />
+        </service>
 
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Bootstrap configuration over adb. DUMP is held by the adb shell and cannot be
+             obtained by ordinary apps, so only adb (or root) can send this broadcast. -->
+        <receiver
+            android:name=".ConfigReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="net.nuclearlighters.ventriloquist.action.CONFIGURE" />
             </intent-filter>
         </receiver>
     </application>
