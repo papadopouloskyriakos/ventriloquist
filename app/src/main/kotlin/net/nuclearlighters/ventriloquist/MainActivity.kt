@@ -3,7 +3,10 @@ package net.nuclearlighters.ventriloquist
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
@@ -100,6 +103,20 @@ class MainActivity : Activity() {
             isAllCaps = false
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            // The theme's focus tint is barely visible on a TV: the row the remote is on gets a
+            // light background and dark text, so it can be seen from the sofa.
+            background = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_focused), rounded(FOCUSED_BG))
+                addState(intArrayOf(), rounded(ROW_BG))
+            }
+            setTextColor(
+                ColorStateList(
+                    arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()),
+                    intArrayOf(FOCUSED_TEXT, Color.WHITE),
+                ),
+            )
+            stateListAnimator = null
+            setPadding(dp(20), dp(14), dp(20), dp(14))
             setOnClickListener { onClick() }
         }
         parent.addView(
@@ -108,6 +125,11 @@ class MainActivity : Activity() {
                 .apply { topMargin = dp(4) },
         )
         rows[key] = b
+    }
+
+    private fun rounded(color: Int) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(6).toFloat()
     }
 
     // --- rendering --------------------------------------------------------------------------
@@ -300,6 +322,9 @@ class MainActivity : Activity() {
 
     companion object {
         const val REFRESH_MS = 2000L
+        val ROW_BG = Color.rgb(0x37, 0x47, 0x4F)
+        val FOCUSED_BG = Color.rgb(0xEC, 0xEF, 0xF1)
+        val FOCUSED_TEXT = Color.rgb(0x1F, 0x29, 0x33)
         const val ROW_SOUND = "sound"
         const val ROW_SPEAKERS = "speakers"
         const val ROW_KEYS = "keys"
