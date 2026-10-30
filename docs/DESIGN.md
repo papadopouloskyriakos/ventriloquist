@@ -170,7 +170,9 @@ is muted. To keep the TV's level from drifting, the Home Assistant package saves
 when house mode starts and puts it back when it stops. A household that wants the TV untouched can
 set the Shield's volume control to SHIELD or to CEC instead of IR: then the remote sends no
 infrared, and the app's filter takes the key before the box would turn it into a volume change or
-a CEC command.
+a CEC command. CEC only helps with a TV that acts on CEC volume commands: the reference Philips TV
+acknowledges the Shield's `<User Control Pressed>` volume messages and ignores them, so with CEC its
+volume could no longer be changed from the Shield remote at all, and it stays on IR.
 
 ### House mode
 
