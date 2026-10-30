@@ -60,7 +60,7 @@ Two things make this hard:
   sample rate, never as a burst, so a slow network cannot grow an unbounded queue in the app.
 - The Music Assistant receiver has to match: port (default 6980), stream name, sender address,
   PCM format, sample rate, channel count. It ignores packets while nothing is playing the
-  source, so the app may send continuously or only on demand; on demand is the default plan.
+  source. Ventriloquist sends only while house mode is on (see Control).
 
 ### Play
 
@@ -98,12 +98,39 @@ Other Android TV devices do not expose an equivalent parameter. On them Ventrilo
 music-grade sender: fine for music apps and for listeners in other rooms, not for dialogue in
 the room with the picture.
 
+### The TV's own speakers
+
+The compensation delays the picture, not the HDMI sound. With house mode on, the TV's speakers
+would therefore play ahead of both the picture and the house speakers by the whole house delay,
+which is an echo. They must be silent while house mode is on.
+
+Ventriloquist silences them from the box, so nothing on the TV has to change:
+
+- It sets the box's media volume for the HDMI output to zero when house mode starts, and restores
+  the previous value when house mode stops. On the reference Shield the HDMI output is not a
+  fixed-volume device (its fixed list covers only the analogue dock, line and S/PDIF outputs), so
+  this volume really scales what the TV receives.
+- Playback capture is not affected: Android renders a capture mix at unit gain whatever the
+  stream volume is (the audio policy treats a remote-submix output that serves a policy mix as
+  fixed volume). To be confirmed on the device in the first test.
+- The previous volume is persisted before it is changed, and restored at service stop, at the
+  next boot and when the app starts after a crash, so a failure cannot leave the TV mute.
+- Remote controls that drive the TV's volume directly (by infrared or HDMI-CEC) keep changing
+  the TV, which is silent in house mode. House volume belongs to Music Assistant (its group
+  volume, or a home-automation slider).
+
 ### Control
 
 House mode is a state: capture running, stream playing on the chosen player group, TV speakers
-muted, latency parameter set. A home-automation system flips it. The app offers a small local
-HTTP endpoint (status, start, stop) and equivalent intents for `adb shell am`, and it restarts
-its idle service at boot so the endpoint is reachable.
+muted, latency parameter set, surround output forced to stereo PCM. A home-automation system
+flips it. The app offers a small local HTTP endpoint (status, start, stop) and equivalent intents
+for `adb shell am`, and it restarts its idle service at boot so the endpoint is reachable.
+
+Capture runs only while house mode is on. The consent, however, is obtained once per boot: the
+idle service asks for it at boot and keeps the resulting projection, and house mode then opens
+and closes the actual capture on that projection as often as needed. This keeps the box idle
+(no capture, no packets) outside house mode, which matters on a device with little memory, and
+it still starts instantly because no dialog appears when house mode is switched on.
 
 ## Latency model
 
@@ -146,6 +173,7 @@ Music Assistant side (queue strategy, player start scheduling), not in the app.
 2. Capture: consent flow, `AudioRecord` on playback capture, level meter on the status screen.
 3. Send: VBAN sender with source-clock pacing, settings for destination and stream name.
 4. Latency module: read and set the Shield HDMI latency parameter; surround-to-PCM toggle;
-   measurement procedure with the Shield's test clip.
+   HDMI volume to zero with persisted restore; measurement procedure with the Shield's test
+   clip.
 5. Control: HTTP endpoint and intents; boot start; home-automation recipe.
 6. Release: signing key outside the repository, versioned builds, install notes.

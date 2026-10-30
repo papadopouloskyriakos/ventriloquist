@@ -35,6 +35,9 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design and the roadmap.
    an audio HAL parameter for the HDMI output latency. Ventriloquist sets the same parameter to
    the measured house delay while house mode is on, and clears it when house mode is off. Other
    Android TV devices get steps 1 to 3 only.
+5. **TV speakers.** The picture is delayed but the HDMI sound is not, so the TV's own speakers
+   would run ahead as an echo. In house mode Ventriloquist turns the box's HDMI volume to zero
+   (capture keeps full level) and restores it afterwards, also after a crash or a reboot.
 
 ## Requirements
 
