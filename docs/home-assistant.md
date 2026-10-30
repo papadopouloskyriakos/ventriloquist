@@ -1,8 +1,10 @@
 # Home Assistant
 
 Ventriloquist works without Home Assistant. With it, Home Assistant gets a switch for the app's
-"Home speakers / TV speakers" choice, a status sensor, and a second way to silence the TV: its
-own integration mutes the TV while the home speakers play and unmutes it afterwards.
+"Home speakers / TV speakers" choice, a status sensor, the TV's volume saved when the home
+speakers take over and put back afterwards (a remote that sends infrared to the TV moves the
+TV's volume with every press, see [DESIGN.md](DESIGN.md)), and an optional second way to silence
+the TV: its own integration mutes the TV while the home speakers play and unmutes it afterwards.
 
 The package below needs no restart to add: it uses `rest_command` and template entities (both
 reloadable) instead of the REST integration. Put it in `packages/ventriloquist.yaml`, include the
@@ -22,7 +24,7 @@ ventriloquist_webhook_id: "<a long random string>"
 
 Replace `TV_ADDRESS` with the box's address and `media_player.YOUR_TV` with the TV's media player
 (one whose `volume_mute` sets the state rather than toggling it). Check the configuration, then
-reload input booleans, REST commands, template entities and automations. Finally give the app
+reload input booleans, input numbers, REST commands, template entities and automations. Finally give the app
 the webhook, over the network:
 
 ```sh
@@ -34,7 +36,8 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 Android blocks plain `http://` from apps, so the webhook URL must be `https://`, for example
 Home Assistant's own external URL. The webhook is `local_only`; a reverse proxy on the LAN passes.
 
-Turn on `input_boolean.ventriloquist_mute_tv` to let Home Assistant mute the TV. It only ever
+Turn on `input_boolean.ventriloquist_mute_tv` to let Home Assistant also mute the TV (the muted
+box already gives the TV silence, and a volume press unmutes many TVs). It only ever
 unmutes a mute it made itself, and a mute or unmute by hand wins. Safety unmutes: the app reports
 stopped (webhook or poll), the app is unreachable for 2 minutes, the TV is turned on while
 nothing plays, Home Assistant starts.
@@ -47,6 +50,18 @@ input_boolean:
   ventriloquist_tv_muted:
     name: "Ventriloquist: the TV is muted by Home Assistant"
     icon: mdi:volume-off
+  ventriloquist_tv_volume_saved:
+    name: "Ventriloquist: the TV's volume is saved for restoring"
+    icon: mdi:content-save
+
+input_number:
+  ventriloquist_tv_volume:
+    name: "Ventriloquist: the TV's volume before the home speakers played"
+    icon: mdi:volume-medium
+    min: 0
+    max: 1
+    step: 0.01
+    mode: box
 
 rest_command:
   ventriloquist_status:
@@ -112,12 +127,13 @@ template:
 
 automation:
   - id: ventriloquist_tv_mute
-    alias: "Ventriloquist - mute the TV while the home speakers play, unmute after"
+    alias: "Ventriloquist - the TV while the home speakers play: save and restore its volume, optional mute"
     description: >-
-      Mutes the TV when the Ventriloquist app starts playing on the home
-      speakers and unmutes it when it stops. Unmutes only a mute this automation made
-      (input_boolean.ventriloquist_tv_muted). Safety unmutes: app unreachable for 2 minutes,
-      the TV turned on while nothing plays, Home Assistant start.
+      When the Ventriloquist app starts playing on the home speakers: saves the
+      TV's volume (the Shield remote's own infrared moves it with every press while the
+      speakers play) and, if ventriloquist_mute_tv is on, mutes the TV. When it stops: unmutes
+      only a mute this automation made, and puts the saved volume back. Also on: app
+      unreachable for 2 minutes, the TV turned on while nothing plays, Home Assistant start.
     mode: queued
     max: 10
     triggers:
@@ -154,11 +170,32 @@ automation:
             {{ (trigger.json.house | default(false)) == true if trigger.id == 'hook'
                else (false if trigger.id == 'lost'
                else is_state('sensor.ventriloquist', 'house')) }}
-      - choose:
-          - conditions:
+      - if:
+          - condition: template
+            value_template: "{{ house }}"
+        then:
+          # save the TV's own volume once, while it is known (some TVs report 0 while muted)
+          - if:
+              - condition: state
+                entity_id: input_boolean.ventriloquist_tv_volume_saved
+                state: "off"
+              - condition: state
+                entity_id: media_player.YOUR_TV
+                state: "on"
               - condition: template
-                value_template: "{{ house }}"
-            sequence:
+                value_template: >-
+                  {{ state_attr('media_player.YOUR_TV', 'is_volume_muted') != true
+                     and state_attr('media_player.YOUR_TV', 'volume_level') is number }}
+            then:
+              - action: input_number.set_value
+                target:
+                  entity_id: input_number.ventriloquist_tv_volume
+                data:
+                  value: "{{ state_attr('media_player.YOUR_TV', 'volume_level') | round(2) }}"
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.ventriloquist_tv_volume_saved
+          - if:
               - condition: state
                 entity_id: input_boolean.ventriloquist_mute_tv
                 state: "on"
@@ -167,6 +204,7 @@ automation:
                 state: "on"
               - condition: template
                 value_template: "{{ state_attr('media_player.YOUR_TV', 'is_volume_muted') != true }}"
+            then:
               - action: input_boolean.turn_on
                 target:
                   entity_id: input_boolean.ventriloquist_tv_muted
@@ -175,22 +213,48 @@ automation:
                   entity_id: media_player.YOUR_TV
                 data:
                   is_volume_muted: true
-        default:
-          - condition: state
-            entity_id: input_boolean.ventriloquist_tv_muted
-            state: "on"
-          # a TV that is off cannot be unmuted; the flag stays, and the TV turning on unmutes
-          - condition: state
-            entity_id: media_player.YOUR_TV
-            state: "on"
-          - action: media_player.volume_mute
-            target:
-              entity_id: media_player.YOUR_TV
-            data:
-              is_volume_muted: false
-          - action: input_boolean.turn_off
-            target:
-              entity_id: input_boolean.ventriloquist_tv_muted
+        else:
+          # a TV that is off can be neither unmuted nor set: the flags stay, the TV turning on
+          # (trigger tv_on) finishes the job
+          - if:
+              - condition: state
+                entity_id: input_boolean.ventriloquist_tv_muted
+                state: "on"
+              - condition: state
+                entity_id: media_player.YOUR_TV
+                state: "on"
+            then:
+              - action: media_player.volume_mute
+                target:
+                  entity_id: media_player.YOUR_TV
+                data:
+                  is_volume_muted: false
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.ventriloquist_tv_muted
+              - delay: "00:00:02"
+          - if:
+              - condition: state
+                entity_id: input_boolean.ventriloquist_tv_volume_saved
+                state: "on"
+              - condition: state
+                entity_id: media_player.YOUR_TV
+                state: "on"
+            then:
+              - if:
+                  - condition: template
+                    value_template: >-
+                      {{ (state_attr('media_player.YOUR_TV', 'volume_level') | float(-1) | round(2))
+                         != (states('input_number.ventriloquist_tv_volume') | float(-1) | round(2)) }}
+                then:
+                  - action: media_player.volume_set
+                    target:
+                      entity_id: media_player.YOUR_TV
+                    data:
+                      volume_level: "{{ states('input_number.ventriloquist_tv_volume') | float }}"
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.ventriloquist_tv_volume_saved
       - event: ventriloquist_refresh
 
   - id: ventriloquist_tv_unmuted_by_hand

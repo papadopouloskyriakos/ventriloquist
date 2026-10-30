@@ -92,10 +92,14 @@ silenced from the box, so nothing on the TV has to change:
 
 - When house mode starts, the box's media stream is muted with
   `adjustStreamVolume(STREAM_MUSIC, ADJUST_MUTE)`; when it stops, the previous mute state comes
-  back. The TV then receives silence over HDMI.
-- The volume index is never stepped. On a box that controls the TV's volume by infrared or
-  HDMI-CEC (an NVIDIA Shield does), an index change becomes a volume command to the TV: version
-  0.3 set the index to 0 and the Shield sent the TV sixteen infrared volume-down commands.
+  back. The TV then receives silence over HDMI: a muted stream gets index 0 on every output,
+  full-volume HDMI included (`VolumeStreamState.applyAllVolumes`, unchanged on the Shield).
+- The volume index is never stepped. On a Shield in IR volume mode, `setStreamVolume` from any app
+  becomes infrared key events to the TV (`AudioService.processVolumeControlForIR`: a mute when the
+  target is 0, then one volume-down or volume-up per step): version 0.3.1 set the index to 0 and
+  the TV ended muted at volume 0. `adjustStreamVolume`, mute included, goes to infrared only for
+  the packages in the framework array `allow_ir_volume_control_packages` (the Assistant, NVIDIA's
+  remote apps, TalkBack, Alexa and a few others); for any other app it is a local change.
 - Playback capture is not affected: Android renders a capture mix at unit gain whatever the
   stream volume or mute is (the audio policy treats a remote-submix output that serves a policy
   mix as fixed volume).
@@ -116,15 +120,35 @@ Up never passes `max_volume` (and never lowers a level set higher elsewhere); do
 A short message on screen shows the new level. The service reads no window content and asks
 for no accessibility events; it is enabled once over adb.
 
-A remote that sends infrared to the TV by itself, without the box, cannot be stopped by any app.
-On a Shield the 2019 remote can work that way: the Shield programs the TV's infrared codes into
-the remote ("IR mode"). Its log shows the IR mode switched off and on again at the same moments
-as the media stream is muted and unmuted, which on the observed device happens when the box goes
-to sleep and wakes; whether the mute or the sleep is the cause is not known. The key also
-reaches Android as `KEY_VOLUMEUP` or `KEY_VOLUMEDOWN` (seen with `getevent`), and with IR mode on
-the system then changes no volume of its own. Whether muting the box during house mode keeps the
-remote's infrared away from the TV is the open question of the first test of 0.4; no published
-test was found.
+**What the Shield does with the remote's volume buttons.** Read from the system code of the
+reference Shield (SHIELD TV 2017 on Android 11: `services.jar`, `NvIRTuner.apk`, `TvSettings.apk`,
+disassembled with `dexdump`), with the 2019 remote (NVIDIA "Friday", USB 0955:7217):
+
+- NVIDIA's volume-control setting `nv_volume_control_mode` (Settings.System) is 0 SHIELD,
+  1 CEC and IR, 2 CEC, 3 IR (`NvIRTunerManager`).
+- In IR mode the remote sends the TV's infrared code itself. NVIDIA's IR service turns this
+  "IR mode" on in the remote when `nv_volume_control_mode` is 3 and either
+  `nv_ir_non_audio_device_connected` is 0 or `audio_output_mode` is 1
+  (`NvIRTunerService.isNeedEnableIRModeVolume`). Nothing else is an input: muting the box does
+  not switch it off. An app cannot stop this infrared, and the Shield exposes no call to switch
+  the remote's IR mode (the service's AIDL interface has none).
+- The remote also sends the key over Bluetooth (`KEY_VOLUMEUP`, `KEY_VOLUMEDOWN`). The window
+  manager's early hook (`PhoneWindowManager.interceptKeyBeforeQueueing`) has NVIDIA additions only
+  for waking and for remembering the last input device, and passes volume keys on as stock Android
+  does. NVIDIA drops keys later, at dispatch: `InputManagerService.interceptKeyBeforeDispatching`
+  drops keys "consumed by IR (controller)", but not those of the Friday remote, and
+  `MediaSessionService` skips the volume change while the remote's IR mode is on (the remote has
+  already sent it). That is why Android changes no volume of its own in IR mode.
+- An accessibility service's key filter sees a key before it is dispatched, so Ventriloquist gets
+  the button press first and takes it; the system never handles it.
+
+So while the home speakers play, a press moves the speakers (the app) and the TV's own volume (the
+remote's infrared), and the TV shows its volume bar. The TV is silent either way, because the box
+is muted. To keep the TV's level from drifting, the Home Assistant package saves the TV's volume
+when house mode starts and puts it back when it stops. A household that wants the TV untouched can
+set the Shield's volume control to SHIELD or to CEC instead of IR: then the remote sends no
+infrared, and the app's filter takes the key before the box would turn it into a volume change or
+a CEC command.
 
 ### House mode
 
@@ -254,8 +278,8 @@ Measured end to end with Squeezelite players: about 8 s. Fine for music, late fo
 - No AirPlay, Cast or Bluetooth output. Music Assistant already drives those players.
 - No lip sync (see above).
 - No writes to the box vendor's own settings (such as the Shield's volume-control mode): a
-  normal app cannot write them, and changing how a remote controls the TV behind the
-  household's back is not the app's call.
+  normal app cannot write a non-public system setting, and changing how a remote controls the
+  TV behind the household's back is not the app's call.
 
 ## Prior art
 
@@ -279,4 +303,5 @@ Measured end to end with Squeezelite players: about 8 s. Fine for music, late fo
    Assistant, lip sync measured and dropped. Done (0.3.2).
 3. 0.4: music only, any app, the box muted instead of the volume index, volume buttons on the
    speakers, settings screen, Home Assistant webhook, quiet hours stop a running session. Built;
-   device test of the volume buttons and the mute next.
+   the key path and the mute were established from the Shield's own code; a listening test of
+   the whole chain is next.

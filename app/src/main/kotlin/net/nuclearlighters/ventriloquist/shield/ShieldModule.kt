@@ -71,6 +71,16 @@ class ShieldModule(private val audio: AudioControls, private val ledger: Ledger)
         return audio.musicMuted()
     }
 
+    /**
+     * While Ventriloquist holds the box muted, mutes it again if something else unmuted it (an
+     * app or the system adjusting the media stream). Returns true when it had to.
+     */
+    fun reassertMute(): Boolean {
+        if (!ledger.has(K_MUTED) || audio.musicMuted()) return false
+        audio.setMusicMuted(true)
+        return true
+    }
+
     /** Forces PCM surround output, or restores the original; returns the setting afterwards. */
     fun setSurroundPcm(pcm: Boolean): String? {
         if (pcm) {

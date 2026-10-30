@@ -230,6 +230,7 @@ class VentriloquistService : Service(), ControlBackend {
         val quietBefore = machine.inQuietHours(rules)
         machine.evaluate(rules) { houseBlock(config) }?.let { execute(it, config, quietBefore) }
         takesVolumeKeys = house.running && config.volumeKeys
+        if (house.running && shield.reassertMute()) Log.w(TAG, "the box was unmuted during house mode: muted again")
         if (!machine.running) cleanUpLeftovers(force = false)
     }
 

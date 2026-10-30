@@ -85,6 +85,24 @@ class ShieldModuleTest {
     }
 
     @Test
+    fun aMuteUndoneByOthersIsReassertedOnlyWhileHeld() {
+        val audio = FakeAudio()
+        val m = module(MemoryStore(), audio)
+        assertFalse(m.reassertMute()) // not held: nothing to do
+        assertFalse(audio.muted)
+        m.setBoxMuted(true)
+        assertFalse(m.reassertMute()) // still muted
+        audio.muted = false // someone else unmuted it
+        assertTrue(m.reassertMute())
+        assertTrue(audio.muted)
+        m.restore()
+        audio.muted = true
+        audio.muted = false
+        assertFalse(m.reassertMute()) // released: a later unmute is not ours to undo
+        assertFalse(audio.muted)
+    }
+
+    @Test
     fun restoreAfterACrashUsesThePersistedOriginals() {
         val store = MemoryStore()
         val audio = FakeAudio(surround = "0")

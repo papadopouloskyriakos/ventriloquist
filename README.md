@@ -40,7 +40,10 @@ also after a crash or a reboot. See [docs/DESIGN.md](docs/DESIGN.md) for the des
 5. **Volume buttons.** An accessibility service sees the remote's volume buttons before the
    system does. While the home speakers play it takes them and moves the speakers' volume
    (Music Assistant's group volume, which scales every member), within a configurable maximum,
-   with a short message on screen. At any other time the buttons are left alone.
+   with a short message on screen. At any other time the buttons are left alone. A remote that
+   sends infrared to the TV by itself (the 2019 Shield remote with the Shield's volume control on
+   IR) still moves the TV's own volume too; the TV stays silent because the box is muted, and the
+   Home Assistant package puts the TV's volume back afterwards. See docs/DESIGN.md.
 6. **Automatic.** A watcher follows media sessions, active audio players and the screen. Any
    app counts. House mode starts a few seconds after playback starts, stays through a pause,
    and stops a few minutes after playback ends or the screen goes off. Nothing starts inside
@@ -52,8 +55,8 @@ also after a crash or a reboot. See [docs/DESIGN.md](docs/DESIGN.md) for the des
    Everything works with the remote's arrows and OK. Addresses and tokens are set at
    provisioning time and are not shown.
 8. **Home Assistant (optional).** The app posts `house_started` and `house_stopped` to a
-   Home Assistant webhook, and `GET /status` can be polled; an example package is in
-   [docs/home-assistant.md](docs/home-assistant.md).
+   Home Assistant webhook, and `GET /status` can be polled; an example package (switch, status,
+   TV volume restore, optional TV mute) is in [docs/home-assistant.md](docs/home-assistant.md).
 
 ### Why there is no lip sync
 
