@@ -93,16 +93,21 @@ silenced from the box, so nothing on the TV has to change:
 - When house mode starts, the box's media stream is muted with
   `adjustStreamVolume(STREAM_MUSIC, ADJUST_MUTE)`; when it stops, the previous mute state comes
   back. The TV then receives silence over HDMI: a muted stream gets index 0 on every output,
-  full-volume HDMI included (`VolumeStreamState.applyAllVolumes`, unchanged on the Shield).
+  full-volume HDMI included (`VolumeStreamState.applyAllVolumes`, unchanged on the Shield). On the
+  Shield the call passes NVIDIA's "HDMI fixed volume" check (`currentVolumeControlType` 2) for an
+  app's call in IR mode, `mUseFixedVolume` is false, and the media stream is affected by mute.
 - The volume index is never stepped. On a Shield in IR volume mode, `setStreamVolume` from any app
   becomes infrared key events to the TV (`AudioService.processVolumeControlForIR`: a mute when the
   target is 0, then one volume-down or volume-up per step): version 0.3.1 set the index to 0 and
   the TV ended muted at volume 0. `adjustStreamVolume`, mute included, goes to infrared only for
   the packages in the framework array `allow_ir_volume_control_packages` (the Assistant, NVIDIA's
   remote apps, TalkBack, Alexa and a few others); for any other app it is a local change.
-- Playback capture is not affected: Android renders a capture mix at unit gain whatever the
-  stream volume or mute is (the audio policy treats a remote-submix output that serves a policy
-  mix as fixed volume).
+- Playback capture is not affected: an output that feeds a capture policy mix is fixed at unit
+  gain (`SwAudioOutputDescriptor::isFixedVolume` in
+  [AudioOutputDescriptor.cpp](https://android.googlesource.com/platform/frameworks/av/+/refs/heads/android11-release/services/audiopolicy/common/managerdefinitions/src/AudioOutputDescriptor.cpp),
+  applied in `AudioPolicyManager::checkAndSetVolume`), and the captured copy is taken from each
+  track before any volume (`interceptBuffer` in `Track::getNextBuffer`). Measured on the Shield
+  with the index at 0 in 0.3.
 - `mute_box` turns this off, for a TV that should keep playing.
 - A home-automation system can mute the TV itself as a second layer; the app tells it when
   house mode starts and stops (see Home Assistant).
@@ -135,12 +140,24 @@ disassembled with `dexdump`), with the 2019 remote (NVIDIA "Friday", USB 0955:72
 - The remote also sends the key over Bluetooth (`KEY_VOLUMEUP`, `KEY_VOLUMEDOWN`). The window
   manager's early hook (`PhoneWindowManager.interceptKeyBeforeQueueing`) has NVIDIA additions only
   for waking and for remembering the last input device, and passes volume keys on as stock Android
-  does. NVIDIA drops keys later, at dispatch: `InputManagerService.interceptKeyBeforeDispatching`
-  drops keys "consumed by IR (controller)", but not those of the Friday remote, and
-  `MediaSessionService` skips the volume change while the remote's IR mode is on (the remote has
-  already sent it). That is why Android changes no volume of its own in IR mode.
-- An accessibility service's key filter sees a key before it is dispatched, so Ventriloquist gets
-  the button press first and takes it; the system never handles it.
+  does. In IR mode `MediaSessionService` then skips the volume change (the remote has already sent
+  it), which is why Android changes no volume of its own.
+- Stock Android TV would never give the key to an app. Android 11's accessibility key interceptor
+  asks the window manager about volume keys before any accessibility service sees them
+  ([KeyboardInterceptor.java](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android11-release/services/accessibility/java/com/android/server/accessibility/KeyboardInterceptor.java),
+  `getEventDelay`), and on a TV the window manager applies the volume itself and drops the key
+  ([PhoneWindowManager.java](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android11-release/services/core/java/com/android/server/policy/PhoneWindowManager.java):
+  "On TVs ... volume keys never go to the foreground app", `return -1`). Remapping apps report the
+  same on other Android TV devices.
+- The Shield's build changes exactly that. Its `KeyboardInterceptor.getEventDelay` marks the key
+  (flag `0x8000`) before asking, and its `PhoneWindowManager.interceptKeyBeforeDispatching` skips
+  the TV volume branch for a marked key; volume keys are not in the Shield's `global_keys.xml`, so
+  the answer is 0 and the key goes to accessibility services first. Unconsumed, it then takes the
+  normal TV path. NVIDIA's release notes of 2019 and 2020 mention fixes for IR and CEC volume
+  "if using a button remapper" and "when accessibility features enabled", which fits.
+- So Ventriloquist's accessibility service gets the press and takes it while the home speakers
+  play; the system never handles it. On another Android TV device the volume buttons will most
+  likely not reach the app at all.
 
 So while the home speakers play, a press moves the speakers (the app) and the TV's own volume (the
 remote's infrared), and the TV shows its volume bar. The TV is silent either way, because the box

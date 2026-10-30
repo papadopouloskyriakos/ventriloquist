@@ -43,7 +43,9 @@ also after a crash or a reboot. See [docs/DESIGN.md](docs/DESIGN.md) for the des
    with a short message on screen. At any other time the buttons are left alone. A remote that
    sends infrared to the TV by itself (the 2019 Shield remote with the Shield's volume control on
    IR) still moves the TV's own volume too; the TV stays silent because the box is muted, and the
-   Home Assistant package puts the TV's volume back afterwards. See docs/DESIGN.md.
+   Home Assistant package puts the TV's volume back afterwards. Stock Android TV builds never let
+   an accessibility service see the volume buttons; the Shield's build does (see docs/DESIGN.md),
+   so on other devices this part will most likely not work.
 6. **Automatic.** A watcher follows media sessions, active audio players and the screen. Any
    app counts. House mode starts a few seconds after playback starts, stays through a pause,
    and stops a few minutes after playback ends or the screen goes off. Nothing starts inside
