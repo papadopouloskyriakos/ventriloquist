@@ -108,6 +108,11 @@ silenced from the box, so nothing on the TV has to change:
   applied in `AudioPolicyManager::checkAndSetVolume`), and the captured copy is taken from each
   track before any volume (`interceptBuffer` in `Track::getNextBuffer`). Measured on the Shield
   with the index at 0 in 0.3.
+- Switching the surround output to PCM makes the HDMI sink reconnect about 20 ms after the mute,
+  and Android unmutes media whenever an HDMI device connects. The app watches Android's
+  `STREAM_MUTE_CHANGED_ACTION` and `VOLUME_CHANGED_ACTION` broadcasts and mutes again at once on
+  the main thread (measured on the Shield: about 0,1 s after the reconnect), and checks once a
+  second as well. Only a mute this run made is put back this way; a restore releases it first.
 - `mute_box` turns this off, for a TV that should keep playing.
 - A home-automation system can mute the TV itself as a second layer; the app tells it when
   house mode starts and stops (see Home Assistant).

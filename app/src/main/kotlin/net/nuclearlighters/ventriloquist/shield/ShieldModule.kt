@@ -50,6 +50,13 @@ class ShieldModule(private val audio: AudioControls, private val ledger: Ledger)
 
     val dirty: Boolean get() = ledger.dirty
 
+    /**
+     * True from the moment this run mutes the box until its restore begins. Read from any
+     * thread: the mute watch re-mutes on the main thread while the worker may be busy starting.
+     */
+    @Volatile
+    private var holdingMute = false
+
     /** True while Ventriloquist holds the box's media output muted. */
     val boxMuted: Boolean get() = ledger.has(K_MUTED)
 
@@ -64,6 +71,7 @@ class ShieldModule(private val audio: AudioControls, private val ledger: Ledger)
     fun setBoxMuted(muted: Boolean): Boolean {
         if (muted) {
             if (!ledger.has(K_MUTED)) ledger.recordOriginal(K_MUTED, audio.musicMuted())
+            holdingMute = true
             if (!audio.musicMuted()) audio.setMusicMuted(true)
         } else {
             restoreMute()
@@ -76,7 +84,7 @@ class ShieldModule(private val audio: AudioControls, private val ledger: Ledger)
      * app or the system adjusting the media stream). Returns true when it had to.
      */
     fun reassertMute(): Boolean {
-        if (!ledger.has(K_MUTED) || audio.musicMuted()) return false
+        if (!holdingMute || audio.musicMuted()) return false
         audio.setMusicMuted(true)
         return true
     }
@@ -121,6 +129,7 @@ class ShieldModule(private val audio: AudioControls, private val ledger: Ledger)
     }
 
     private fun restoreMute() {
+        holdingMute = false
         if (!ledger.has(K_MUTED)) return
         val original = ledger.get(K_MUTED) as? Boolean ?: false
         if (audio.musicMuted() != original) audio.setMusicMuted(original)

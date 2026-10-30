@@ -103,6 +103,30 @@ class ShieldModuleTest {
     }
 
     @Test
+    fun theRestoresOwnUnmuteIsNotUndone() {
+        val audio = FakeAudio()
+        val m = module(MemoryStore(), audio)
+        m.setBoxMuted(true)
+        // the unmute that restore makes announces itself; a watcher reacting to it while the
+        // ledger still holds the entry must not mute again
+        audio.beforeChange = { what -> if (what == "mute") assertFalse(m.reassertMute()) }
+        m.restore()
+        assertFalse(audio.muted)
+    }
+
+    @Test
+    fun aMuteLeftByACrashIsRestoredNotReasserted() {
+        val store = MemoryStore()
+        val audio = FakeAudio()
+        module(store, audio).setBoxMuted(true)
+        audio.muted = false // a reconnect unmuted it after the crash
+        val next = module(store, audio) // a new run: nothing is held yet
+        assertFalse(next.reassertMute())
+        assertEquals(emptyList<String>(), next.restore())
+        assertFalse(audio.muted)
+    }
+
+    @Test
     fun restoreAfterACrashUsesThePersistedOriginals() {
         val store = MemoryStore()
         val audio = FakeAudio(surround = "0")

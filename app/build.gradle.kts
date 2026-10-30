@@ -23,8 +23,8 @@ android {
         applicationId = "net.nuclearlighters.ventriloquist"
         minSdk = 30
         targetSdk = 34
-        versionCode = 9
-        versionName = "0.4.3"
+        versionCode = 11
+        versionName = "0.4.5"
     }
 
     signingConfigs {

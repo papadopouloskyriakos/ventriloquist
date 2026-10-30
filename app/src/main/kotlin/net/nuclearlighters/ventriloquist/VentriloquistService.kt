@@ -6,7 +6,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.AppOpsManager
 import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.projection.MediaProjection
@@ -131,6 +134,7 @@ class VentriloquistService : Service(), ControlBackend {
             Log.e(TAG, lastError!!)
         }
         watcher = PlaybackWatcher(this) { post { safeTick() } }
+        registerMuteWatch()
         watcher.start(main)
         worker.scheduleWithFixedDelay({ safeTick() }, TICK_MS, TICK_MS, TimeUnit.MILLISECONDS)
         instance = this
@@ -182,6 +186,11 @@ class VentriloquistService : Service(), ControlBackend {
         if (shutDown) return
         shutDown = true
         watcher.stop()
+        try {
+            unregisterReceiver(muteWatch)
+        } catch (e: IllegalArgumentException) {
+            // was not registered
+        }
         takesVolumeKeys = false
         val errors = try {
             runOnWorker {
@@ -323,6 +332,40 @@ class VentriloquistService : Service(), ControlBackend {
             machine.startFailed()
             lastError = "house mode failed: ${e.javaClass.simpleName}: ${e.message}"
             Log.e(TAG, lastError!!, e)
+        }
+    }
+
+    // --- the box's mute --------------------------------------------------------------------
+
+    /**
+     * Android unmutes media when an HDMI device is (re)connected, and switching the surround
+     * output to PCM makes the HDMI sink reconnect about 20 ms after the box was muted. The tick
+     * would mute again only once the start has finished (seconds later); this mutes again as
+     * soon as Android announces the change.
+     */
+    private val muteWatch = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            // on the main thread, not the worker: a start in progress blocks the worker for
+            // seconds (the Music Assistant call), and the TV must not play meanwhile
+            try {
+                if (shield.reassertMute()) {
+                    Log.w(TAG, "the box was unmuted during house mode (${intent.action}): muted again")
+                }
+            } catch (e: RuntimeException) {
+                Log.e(TAG, "re-mute failed", e)
+            }
+        }
+    }
+
+    private fun registerMuteWatch() {
+        val filter = IntentFilter().apply {
+            addAction(ACTION_STREAM_MUTE_CHANGED)
+            addAction(ACTION_VOLUME_CHANGED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(muteWatch, filter, null, main, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(muteWatch, filter, null, main)
         }
     }
 
@@ -703,6 +746,10 @@ class VentriloquistService : Service(), ControlBackend {
         const val TICK_MS = 1000L
         const val LEFTOVER_RETRY_MS = 60_000L
         const val HA_RETRY_MS = 2_000L
+
+        /** System broadcasts (hidden constants of AudioManager) for stream mute and volume changes. */
+        const val ACTION_STREAM_MUTE_CHANGED = "android.media.STREAM_MUTE_CHANGED_ACTION"
+        const val ACTION_VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
         const val VOLUME_GATHER_MS = 120L
         const val VOLUME_KNOWN_MS = 5_000L
 
