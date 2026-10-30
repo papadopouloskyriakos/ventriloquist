@@ -81,7 +81,9 @@ class HouseSession(
                 }
             }
             shield.setLatency(if (newMode == HouseMode.FILM) config.filmLatencyMs else 0)
-            shield.setTvMuted(true)
+            // a box that turns its volume into infrared commands to the TV (the Shield does)
+            // cannot give the old level back exactly, so muting is a per-device choice
+            if (config.tvMute) shield.setTvMuted(true)
             shield.setSurroundPcm(true)
             streamer.start(config)
             val player = if (newMode == HouseMode.FILM) config.filmPlayerId else config.musicPlayerId

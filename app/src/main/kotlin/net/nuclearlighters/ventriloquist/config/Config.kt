@@ -27,6 +27,7 @@ data class Config(
     val musicPackages: List<String> = emptyList(),
     val startDebounceS: Int = 3,
     val stopDelayS: Int = 180,
+    val tvMute: Boolean = true,
 ) {
 
     class ConfigException(val errors: List<String>) :
@@ -61,6 +62,7 @@ data class Config(
                     "music_packages" -> c.copy(musicPackages = textList(raw ?: defaults.musicPackages, 256))
                     "start_debounce_s" -> c.copy(startDebounceS = int(raw ?: defaults.startDebounceS, 0..600))
                     "stop_delay_s" -> c.copy(stopDelayS = int(raw ?: defaults.stopDelayS, 0..3600))
+                    "tv_mute" -> c.copy(tvMute = bool(raw ?: defaults.tvMute))
                     else -> throw IllegalArgumentException("unknown key")
                 }
             } catch (e: IllegalArgumentException) {
@@ -91,6 +93,7 @@ data class Config(
         "music_packages" to musicPackages,
         "start_debounce_s" to startDebounceS,
         "stop_delay_s" to stopDelayS,
+        "tv_mute" to tvMute,
     )
 
     /** Keys that must be set before house mode can run; empty when ready. */
@@ -178,6 +181,11 @@ data class Config(
                 "must be in ${range.first}..${range.last}"
             }
             return v.toInt()
+        }
+
+        private fun bool(raw: Any): Boolean {
+            require(raw is Boolean) { "expected true or false" }
+            return raw
         }
 
         private fun textList(raw: Any, maxItem: Int): List<String> {

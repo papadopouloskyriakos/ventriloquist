@@ -110,6 +110,22 @@ class HouseSessionTest {
     }
 
     @Test
+    fun tvMuteOffLeavesTheTvVolumeAndMuteAlone() {
+        val r = Rig()
+        r.session.start(HouseMode.FILM, config.copy(tvMute = false))
+
+        assertEquals(13, r.audio.volume)
+        assertFalse(r.audio.muted)
+        assertEquals(600, r.audio.latency)
+        assertTrue(r.streamer.running)
+
+        assertEquals(emptyList<String>(), r.session.stop(config.copy(tvMute = false)))
+        assertEquals(13, r.audio.volume)
+        assertFalse(r.audio.muted)
+        assertEquals(0, r.audio.latency)
+    }
+
+    @Test
     fun filmSavesAndSetsTheSurroundPlayersThenStopRestoresEverything() {
         val r = Rig()
         r.session.start(HouseMode.FILM, config)
