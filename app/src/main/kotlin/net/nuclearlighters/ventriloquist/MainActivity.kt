@@ -9,7 +9,10 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.widget.TextView
 
-/** Status screen. OK on the remote asks for the capture consent when none is held. */
+/**
+ * Status screen. OK on the remote opens ConsentActivity: the consent dialog when no consent is
+ * held, otherwise only a re-arm of the background capture access.
+ */
 class MainActivity : Activity() {
 
     private lateinit var status: TextView
@@ -49,9 +52,7 @@ class MainActivity : Activity() {
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
-            if (VentriloquistService.instance?.status()?.get("projection_ready") != true) {
-                startActivity(Intent(this, ConsentActivity::class.java))
-            }
+            startActivity(Intent(this, ConsentActivity::class.java))
             render()
             return true
         }
@@ -70,6 +71,7 @@ class MainActivity : Activity() {
                 R.string.status_template,
                 version,
                 s["consent"].toString(),
+                s["capture_access"].toString(),
                 s["mode"].toString(),
                 if (capture["running"] == true) getString(R.string.yes) else getString(R.string.no),
                 s["hdmi_latency_ms"]?.toString() ?: "?",

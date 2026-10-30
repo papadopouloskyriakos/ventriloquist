@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.AppOpsManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -14,6 +15,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import net.nuclearlighters.ventriloquist.capture.CaptureController
@@ -86,6 +88,9 @@ class VentriloquistService : Service(), ControlBackend {
     @Volatile
     private var holdsProjection = false
 
+    /** True while a media projection (the capture consent) is held. */
+    val projectionHeld: Boolean get() = projection != null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -119,6 +124,13 @@ class VentriloquistService : Service(), ControlBackend {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action != ACTION_STOP) {
+            // Every start command re-asserts the foreground state with the microphone type. When
+            // the command comes from a visible activity (ConsentActivity, MainActivity), this is
+            // what gives the service while-in-use recording access for the rest of its life.
+            // The service is never taken out of the foreground except to stop it.
+            startForegroundCompat()
+        }
         when (intent?.action) {
             ACTION_STOP -> {
                 Log.i(TAG, "stop requested")
@@ -133,6 +145,7 @@ class VentriloquistService : Service(), ControlBackend {
                 Log.w(TAG, "capture consent denied")
             }
             ACTION_BOOT -> if (projection == null) requestConsent()
+            ACTION_REARM -> Log.i(TAG, "foreground re-asserted from a visible activity; capture access ${captureAccess()}")
             ACTION_CONFIG_CHANGED -> {
                 Log.i(TAG, "configuration changed")
                 post { safeTick() }
@@ -197,7 +210,7 @@ class VentriloquistService : Service(), ControlBackend {
         val timing = Timing.of(config)
         machine.screen(watcher.screenOn)
         machine.observe(watcher.snapshot(config))
-        machine.evaluate(timing)?.let { execute(it, config) }
+        machine.evaluate(timing) { mode -> houseBlock(mode, config) }?.let { execute(it, config) }
         if (machine.running == null) cleanUpLeftovers(force = false)
     }
 
@@ -212,6 +225,30 @@ class VentriloquistService : Service(), ControlBackend {
             }
         }
         updateNotification()
+    }
+
+    /** Why [mode] cannot start now, or null; checked before any attempt so nothing churns. */
+    private fun houseBlock(mode: HouseMode, config: Config): String? {
+        val missing = config.missingForHouse(film = mode == HouseMode.FILM)
+        if (missing.isNotEmpty()) return "not configured: ${missing.joinToString(", ")}"
+        if (projection == null) return "capture consent needed"
+        val access = captureAccess()
+        if (access != ACCESS_GRANTED) return "capture access: $access"
+        return null
+    }
+
+    /**
+     * Whether the app may record right now: `granted`, `needs_visible_start` (the foreground
+     * service was started while no activity of the app was visible, so Android withholds
+     * while-in-use recording; open ConsentActivity once to fix it) or `no_record_audio_permission`.
+     * Reads the evaluated RECORD_AUDIO app-op, which reflects the process's microphone capability.
+     */
+    @Suppress("DEPRECATION") // the non-deprecated variant needs API 36; this one exists since 29
+    private fun captureAccess(): String {
+        if (!granted(Manifest.permission.RECORD_AUDIO)) return ACCESS_NO_PERMISSION
+        val ops = getSystemService(AppOpsManager::class.java)
+        val mode = ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_RECORD_AUDIO, Process.myUid(), packageName)
+        return if (mode == AppOpsManager.MODE_ALLOWED) ACCESS_GRANTED else ACCESS_NEEDS_VISIBLE_START
     }
 
     private fun startHouse(mode: HouseMode, config: Config) {
@@ -322,13 +359,27 @@ class VentriloquistService : Service(), ControlBackend {
     // --- foreground notification ------------------------------------------------------------
 
     private fun startForegroundCompat() {
-        val type = if (Build.VERSION.SDK_INT >= 34) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+        if (Build.VERSION.SDK_INT >= 34) {
+            // Android 14 checks each type when it is requested: the projection type needs a
+            // consent, the microphone type a visible app. Ask for what applies, fall back without
+            // the microphone when it is refused (capture then works only while the app is shown).
+            val base = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
                 (if (holdsProjection) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0)
+            try {
+                startForeground(NOTIFICATION_ID, buildNotification(), base or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } catch (e: SecurityException) {
+                Log.w(TAG, "microphone foreground type refused: ${e.message}")
+                startForeground(NOTIFICATION_ID, buildNotification(), base)
+            }
         } else {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            // Android 11 to 13: the types only need to be declared; whether recording is allowed
+            // in the background is decided by the visibility of the app when the service is started.
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+            )
         }
-        startForeground(NOTIFICATION_ID, buildNotification(), type)
     }
 
     private fun updateNotification() {
@@ -372,6 +423,7 @@ class VentriloquistService : Service(), ControlBackend {
             "version" to versionName(),
             "projection_ready" to (projection != null),
             "consent" to consent,
+            "capture_access" to captureAccess(),
             "permissions" to linkedMapOf(
                 "record_audio" to granted(Manifest.permission.RECORD_AUDIO),
                 "write_secure_settings" to granted(Manifest.permission.WRITE_SECURE_SETTINGS),
@@ -387,7 +439,9 @@ class VentriloquistService : Service(), ControlBackend {
             "hdmi_volume_max" to audio.musicVolumeMax(),
             "volume_fixed" to audio.volumeFixed(),
             "surround_setting" to audio.surroundSetting(),
+            "stream_muted" to audio.musicMuted(),
             "tv_muted" to latency.tvMuted,
+            "tv_mute" to latency.lastMute?.toMap(),
             "dirty" to (latency.dirty || house.maDirty),
             "originals" to latency.originals(),
             "watcher" to linkedMapOf(
@@ -440,22 +494,25 @@ class VentriloquistService : Service(), ControlBackend {
     }
 
     override fun setTvMute(on: Boolean): Map<String, Any?> = runOnWorker {
-        val volume = latency.setTvMuted(on)
-        linkedMapOf(
-            "on" to on,
-            "hdmi_volume" to volume,
-            "hdmi_volume_max" to audio.musicVolumeMax(),
-            "original_volume" to latency.originals()[LatencyModule.K_VOLUME],
-        )
+        val originals = latency.originals()
+        val result = latency.setTvMuted(on)
+        Log.i(TAG, "tv-mute $on: ${result.attempts.joinToString(" | ")}; volume ${result.volume}, muted ${result.muted}")
+        LinkedHashMap(result.toMap()).apply {
+            put("hdmi_volume_max", audio.musicVolumeMax())
+            put("volume_fixed", audio.volumeFixed())
+            put("original_volume", originals[LatencyModule.K_VOLUME] ?: latency.originals()[LatencyModule.K_VOLUME])
+            put("original_muted", originals[LatencyModule.K_MUTED] ?: latency.originals()[LatencyModule.K_MUTED])
+        }
     }
 
     override fun captureTest(seconds: Int): Map<String, Any?> {
         if (projection == null) throw IllegalStateException("consent needed: no media projection held")
+        val access = captureAccess()
         val levels = try {
             capture.captureTest(seconds)
         } catch (e: IllegalStateException) {
-            lastError = "capture test: ${e.message}"
-            throw e
+            lastError = "capture test: ${e.message} (capture_access: $access)"
+            throw IllegalStateException(lastError, e)
         }
         return linkedMapOf(
             "seconds" to seconds,
@@ -463,6 +520,7 @@ class VentriloquistService : Service(), ControlBackend {
             "hdmi_volume" to audio.musicVolume(),
             "tv_muted" to latency.tvMuted,
             "house_mode" to (house.mode?.name?.lowercase() ?: "idle"),
+            "capture_access" to access,
         )
     }
 
@@ -548,6 +606,7 @@ class VentriloquistService : Service(), ControlBackend {
         const val ACTION_START = "net.nuclearlighters.ventriloquist.action.START"
         const val ACTION_STOP = "net.nuclearlighters.ventriloquist.action.STOP"
         const val ACTION_BOOT = "net.nuclearlighters.ventriloquist.action.BOOT"
+        const val ACTION_REARM = "net.nuclearlighters.ventriloquist.action.REARM"
         const val ACTION_PROJECTION = "net.nuclearlighters.ventriloquist.action.PROJECTION"
         const val ACTION_CONSENT_DENIED = "net.nuclearlighters.ventriloquist.action.CONSENT_DENIED"
         const val ACTION_CONFIG_CHANGED = "net.nuclearlighters.ventriloquist.action.CONFIG_CHANGED"
@@ -557,6 +616,10 @@ class VentriloquistService : Service(), ControlBackend {
         const val CONSENT_NEEDED = "needed"
         const val CONSENT_READY = "ready"
         const val CONSENT_DENIED = "denied"
+
+        const val ACCESS_GRANTED = "granted"
+        const val ACCESS_NEEDS_VISIBLE_START = "needs_visible_start"
+        const val ACCESS_NO_PERMISSION = "no_record_audio_permission"
 
         const val CHANNEL_ID = "ventriloquist"
         const val NOTIFICATION_ID = 1

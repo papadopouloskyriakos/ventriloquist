@@ -131,7 +131,12 @@ class HouseStateMachine(private val clock: HouseClock) {
         return true
     }
 
-    fun evaluate(t: Timing): Action? {
+    /**
+     * The next action. [blockedFor] names a reason a mode cannot start right now (not configured,
+     * no capture consent or access); such a start waits, reported in [blocked], with no attempt
+     * and no back-off, and goes ahead as soon as the reason is gone.
+     */
+    fun evaluate(t: Timing, blockedFor: (HouseMode) -> String? = { null }): Action? {
         val now = clock.nowMs()
         val quiet = inQuietHours(t)
         blocked = null
@@ -147,6 +152,7 @@ class HouseStateMachine(private val clock: HouseClock) {
                 if (running == wanted) return null
                 if (quiet) return block("quiet hours")
                 if (now < retryAt) return block("waiting after a failed start")
+                blockedFor(wanted)?.let { return block(it) }
                 return if (running == null) start(wanted) else switch(wanted)
             }
             ModeOverride.AUTO -> {
@@ -158,6 +164,7 @@ class HouseStateMachine(private val clock: HouseClock) {
                     if (!screenOn) return block("screen off")
                     if (quiet) return block("quiet hours")
                     if (now < retryAt) return block("waiting after a failed start")
+                    blockedFor(observation.kind)?.let { return block(it) }
                     return start(observation.kind)
                 }
                 val idle = idleSince
@@ -171,6 +178,7 @@ class HouseStateMachine(private val clock: HouseClock) {
                 ) {
                     if (quiet) return block("quiet hours")
                     if (!screenOn) return null
+                    blockedFor(observation.kind)?.let { return block(it) }
                     return switch(observation.kind)
                 }
                 return null

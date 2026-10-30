@@ -29,6 +29,11 @@ class HouseSessionTest {
         override fun setMusicVolume(index: Int) {
             volume = index
         }
+        var muted = false
+        override fun musicMuted() = muted
+        override fun setMusicMuted(muted: Boolean) {
+            this.muted = muted
+        }
         override fun surroundSetting() = surround
         override fun setSurroundSetting(value: String?) {
             surround = value

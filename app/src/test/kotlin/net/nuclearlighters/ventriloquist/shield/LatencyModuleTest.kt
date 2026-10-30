@@ -22,6 +22,10 @@ class LatencyModuleTest {
     ) : AudioControls {
         var beforeChange: (String) -> Unit = {}
         var failVolume = false
+        var muted = false
+
+        /** A full-volume output: the index cannot be lowered, only the stream muted. */
+        var fullVolume = false
 
         override fun getParameters(keys: String): String =
             if (reportLatency) "${LatencyModule.PARAM}=$latency" else ""
@@ -36,7 +40,13 @@ class LatencyModuleTest {
         override fun setMusicVolume(index: Int) {
             beforeChange("volume")
             if (failVolume) throw SecurityException("denied")
-            volume = index
+            if (!fullVolume) volume = index
+        }
+
+        override fun musicMuted(): Boolean = muted
+        override fun setMusicMuted(muted: Boolean) {
+            beforeChange("mute")
+            this.muted = muted
         }
 
         override fun surroundSetting(): String? = surround
@@ -113,7 +123,7 @@ class LatencyModuleTest {
         val m = module(MemoryStore(), audio)
         m.setLatency(500)
         m.setTvMuted(true)
-        assertEquals(7, m.setTvMuted(false))
+        assertEquals(7, m.setTvMuted(false).volume)
         assertFalse(m.tvMuted)
         assertTrue(m.dirty)
         assertEquals(500, audio.latency)
@@ -157,6 +167,69 @@ class LatencyModuleTest {
         assertThrows(IOException::class.java) { m.setTvMuted(true) }
         assertEquals(15, audio.volume)
         assertFalse(m.dirty)
+    }
+
+    @Test
+    fun aNormalOutputIsSilencedByTheIndexAlone() {
+        val audio = FakeAudio(volume = 15)
+        val r = module(MemoryStore(), audio).setTvMuted(true)
+        assertEquals(0, r.volume)
+        assertFalse(r.muted)
+        assertTrue(r.silenced)
+        assertEquals(listOf("setStreamVolume(STREAM_MUSIC, 0, 0): index 15 -> 0, muted false"), r.attempts)
+    }
+
+    @Test
+    fun aFullVolumeOutputFallsBackToMuteAndIsUnmutedOnRestore() {
+        val store = MemoryStore()
+        val audio = FakeAudio(volume = 15)
+        audio.fullVolume = true
+        val seen = mutableListOf<String>()
+        audio.beforeChange = { what -> seen.add("$what:${store.get("shield")}") }
+        val m = module(store, audio)
+        val r = m.setTvMuted(true)
+        assertEquals(15, r.volume)
+        assertTrue(r.muted)
+        assertTrue(r.silenced)
+        assertEquals(2, r.attempts.size)
+        assertTrue(r.attempts[0], r.attempts[0].endsWith("index 15 -> 15, muted false"))
+        assertTrue(r.attempts[1], r.attempts[1].startsWith("adjustStreamVolume(STREAM_MUSIC, ADJUST_MUTE, 0): muted false -> true"))
+        assertTrue(seen.last(), seen.last().startsWith("mute:") && seen.last().contains("\"hdmi_music_muted\":false"))
+
+        // after a crash: the next instance unmutes
+        assertEquals(emptyList<String>(), module(store, audio).restore())
+        assertFalse(audio.muted)
+        assertEquals(15, audio.volume)
+        assertNull(store.get("shield"))
+    }
+
+    @Test
+    fun aThrowingSetStreamVolumeIsLoggedAndMuteIsTried() {
+        val audio = FakeAudio(volume = 15)
+        audio.failVolume = true
+        val r = module(MemoryStore(), audio).setTvMuted(true)
+        assertTrue(r.attempts[0], r.attempts[0].contains("threw SecurityException: denied"))
+        assertTrue(r.muted)
+        assertTrue(r.silenced)
+    }
+
+    @Test
+    fun unmuteLogsWhatItRestores() {
+        val audio = FakeAudio(volume = 9)
+        audio.fullVolume = true
+        val m = module(MemoryStore(), audio)
+        m.setTvMuted(true)
+        val r = m.setTvMuted(false)
+        assertFalse(r.muted)
+        assertEquals(
+            listOf(
+                "adjustStreamVolume(STREAM_MUSIC, ADJUST_UNMUTE, 0): muted true -> false",
+                "setStreamVolume(STREAM_MUSIC, 9, 0): index 9 -> 9",
+            ),
+            r.attempts,
+        )
+        assertFalse(m.dirty)
+        assertEquals(r, m.lastMute)
     }
 
     @Test

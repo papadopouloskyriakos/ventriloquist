@@ -9,9 +9,15 @@ import android.os.Bundle
 import android.util.Log
 
 /**
- * Obtains the playback-capture consent and hands it to the service. Starts the service first:
- * the foreground service of type mediaProjection must be running before the projection is
- * created. Asks for RECORD_AUDIO too when it has not been granted over ADB.
+ * Obtains the playback-capture consent and hands it to the service, and gives the service its
+ * background recording access.
+ *
+ * Android 11 and later let a foreground service record in the background only when it was
+ * started while an activity of the app was visible. So every service start from here happens
+ * while this (translucent) activity is on screen, and the activity stays up for a moment after
+ * the hand-over so that the service enters the foreground (with the microphone type) while the
+ * app is still visible. When a projection is already held, no dialog is shown: opening this
+ * activity only re-arms the access (`adb shell am start -n <package>/.ConsentActivity`).
  */
 class ConsentActivity : Activity() {
 
@@ -20,11 +26,14 @@ class ConsentActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         asked = savedInstanceState?.getBoolean(STATE_ASKED) ?: false
-        startForegroundService(
-            Intent(this, VentriloquistService::class.java).setAction(VentriloquistService.ACTION_START),
-        )
         if (asked) return
         asked = true
+        if (VentriloquistService.instance?.projectionHeld == true) {
+            startVentriloquist(VentriloquistService.ACTION_REARM)
+            finishSoon()
+            return
+        }
+        startVentriloquist(VentriloquistService.ACTION_START)
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_PERMISSION)
         } else {
@@ -65,13 +74,23 @@ class ConsentActivity : Activity() {
         } else {
             service.action = VentriloquistService.ACTION_CONSENT_DENIED
         }
-        startService(service)
-        finish()
+        startForegroundService(service)
+        finishSoon()
+    }
+
+    private fun startVentriloquist(action: String) {
+        startForegroundService(Intent(this, VentriloquistService::class.java).setAction(action))
+    }
+
+    /** Stays visible while the service handles the start command, then goes. */
+    private fun finishSoon() {
+        window.decorView.postDelayed({ finish() }, VISIBLE_HOLD_MS)
     }
 
     companion object {
         private const val REQUEST_PERMISSION = 1
         private const val REQUEST_PROJECTION = 2
         private const val STATE_ASKED = "asked"
+        private const val VISIBLE_HOLD_MS = 1500L
     }
 }

@@ -6,7 +6,7 @@
     <string name="notification_ready">Idle. Capture consent held; nothing is sent.</string>
     <string name="notification_house">House mode: sending TV audio.</string>
     <string name="status_starting">Ventriloquist %1$s\n\nStarting the service.</string>
-    <string name="status_template">Ventriloquist %1$s\n\nCapture consent: %2$s\nMode: %3$s\nCapturing: %4$s\nHDMI latency: %5$s ms\nHDMI volume: %6$s\nChanges to restore: %7$s\nLast error: %8$s\n\nPress OK to ask for the capture consent.</string>
+    <string name="status_template">Ventriloquist %1$s\n\nCapture consent: %2$s\nCapture access: %3$s\nMode: %4$s\nCapturing: %5$s\nHDMI latency: %6$s ms\nHDMI volume: %7$s\nChanges to restore: %8$s\nLast error: %9$s\n\nPress OK to ask for the capture consent, or to re-arm capture access.</string>
     <string name="yes">yes</string>
     <string name="no">no</string>
 </resources>

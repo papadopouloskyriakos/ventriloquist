@@ -20,6 +20,14 @@ class AndroidAudioControls(context: Context) : AudioControls {
     override fun setMusicVolume(index: Int) =
         audio.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0)
 
+    override fun musicMuted(): Boolean = audio.isStreamMute(AudioManager.STREAM_MUSIC)
+
+    override fun setMusicMuted(muted: Boolean) = audio.adjustStreamVolume(
+        AudioManager.STREAM_MUSIC,
+        if (muted) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE,
+        0,
+    )
+
     override fun surroundSetting(): String? =
         Settings.Global.getString(resolver, LatencyModule.SURROUND_KEY)
 

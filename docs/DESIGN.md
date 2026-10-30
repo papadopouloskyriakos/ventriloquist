@@ -42,6 +42,15 @@ Two things make this hard:
   Android 11 shows it every time; the projection stays valid for as long as the foreground
   service holds it, so in practice the consent is needed once per boot of the box. The dialog
   can be accepted with the remote, or by automation that drives the TV's UI over ADB.
+- Background recording: playback capture counts as recording, and Android 11 and later let a
+  foreground service record while another app is in front only if the service has the
+  `microphone` type and was started while an activity of the app was visible (while-in-use
+  access). Without it the audio server refuses the record (app-op 27, `AudioRecord` error -20)
+  although the consent is held. So every service start that matters comes from the translucent
+  consent activity while it is on screen, the service never leaves the foreground until it
+  stops, and opening the consent activity when a consent is already held re-arms the access
+  without a dialog. Status reports `capture_access` (`granted` or `needs_visible_start`), read
+  from the evaluated RECORD_AUDIO app-op; house mode does not start without it.
 - Opt-outs: apps whose manifest sets `allowAudioPlaybackCapture="false"`, apps targeting
   Android 9 or lower, and protected (DRM) content are not captured. Checked on one Shield:
   Plex, YouTube, YouTube Music, VLC, Jellyfin and TuneIn allow capture; Netflix opts out.
@@ -112,7 +121,10 @@ which is an echo. They must be silent while house mode is on.
 Ventriloquist silences them from the box, so nothing on the TV has to change:
 
 - It sets the box's media volume for the HDMI output to zero when house mode starts, and restores
-  the previous value when house mode stops. On the reference Shield the HDMI output is not a
+  the previous value when house mode stops. Where the platform keeps the HDMI index at its
+  maximum (a full-volume output), it mutes the media stream instead
+  (`adjustStreamVolume(ADJUST_MUTE)`) and unmutes it afterwards; each call, with the index and
+  mute state before and after, is returned by `POST /tv-mute` and shown in the status. On the reference Shield the HDMI output is not a
   fixed-volume device (its fixed list covers only the analogue dock, line and S/PDIF outputs), so
   this volume really scales what the TV receives.
 - Playback capture is not affected: Android renders a capture mix at unit gain whatever the

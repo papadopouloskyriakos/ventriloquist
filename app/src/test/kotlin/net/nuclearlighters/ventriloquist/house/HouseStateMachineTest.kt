@@ -250,6 +250,38 @@ class HouseStateMachineTest {
     }
 
     @Test
+    fun aBlockedStartWaitsWithoutBackOffAndGoesAheadOnceClear() {
+        val clock = Clock()
+        val m = machine(clock)
+        var reason: String? = "not configured: ma_url"
+        m.observe(film)
+        clock.now = 5_000
+        assertNull(m.evaluate(t) { reason })
+        assertEquals("not configured: ma_url", m.blocked)
+        assertNull(m.running)
+        reason = null
+        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t) { reason })
+
+        val manual = machine(Clock())
+        manual.setOverride(ModeOverride.MUSIC, t)
+        assertNull(manual.evaluate(t) { mode -> if (mode == HouseMode.MUSIC) "capture access: needs_visible_start" else null })
+        assertEquals("capture access: needs_visible_start", manual.blocked)
+        assertEquals(ModeOverride.MUSIC, manual.override)
+        assertEquals(Action.Start(HouseMode.MUSIC), manual.evaluate(t))
+    }
+
+    @Test
+    fun aBlockedSwitchKeepsTheRunningMode() {
+        val clock = Clock()
+        val m = runningFilm(clock)
+        m.observe(music)
+        clock.now += 3_000
+        assertNull(m.evaluate(t) { mode -> if (mode == HouseMode.MUSIC) "not configured: music_player_id" else null })
+        assertEquals(HouseMode.FILM, m.running)
+        assertEquals("not configured: music_player_id", m.blocked)
+    }
+
+    @Test
     fun aFailedManualStartFallsBackToAuto() {
         val clock = Clock()
         val m = machine(clock)

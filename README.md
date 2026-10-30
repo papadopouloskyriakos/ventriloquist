@@ -106,7 +106,10 @@ The configuration broadcast answers `result=0, data="ok: updated ..."` or `resul
 data="error: ..."`. Its receiver requires `android.permission.DUMP`, which the adb shell holds
 and ordinary apps cannot obtain, so only adb (or root) can configure the app this way; later
 changes go through `POST /config`. The capture consent lasts as long as the service runs: after
-a reboot the app asks again by itself, after an update run the last line again.
+a reboot the app asks again by itself, after an update run the last line again. If status shows
+`capture_access: needs_visible_start` (the service was started while the app was not on screen,
+so Android withholds background recording), run the last line once more: with a consent held it
+only re-arms the access, without a dialog.
 
 `config.json` holds any of these keys (nothing has a site-specific default):
 

@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Playback capture is recording: on Android 11 and later the service needs the microphone
+         type, started while an activity of the app is visible, to record in the background. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Android 14 and later: the idle service before any consent exists. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -56,7 +59,7 @@
         <service
             android:name=".VentriloquistService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection|specialUse">
+            android:foregroundServiceType="mediaProjection|microphone|specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the local house-audio control endpoint reachable between sessions" />
