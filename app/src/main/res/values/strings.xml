@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ventriloquist</string>
+    <string name="notification_channel">Ventriloquist</string>
+    <string name="notification_idle">Idle. Nothing is captured or sent.</string>
+    <string name="status_template">Ventriloquist %1$s\n\nService: %2$s\n\nNothing captures or sends audio yet.\nPress OK to start or stop the idle service.</string>
+    <string name="state_running">running</string>
+    <string name="state_stopped">stopped</string>
+</resources>

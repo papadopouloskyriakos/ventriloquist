@@ -1,0 +1,10 @@
+Ventriloquist
+Copyright 2026 Kyriakos Papadopoulos
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This product includes code ported from androidtv-vban-sender
+(https://github.com/zewelor/androidtv-vban-sender), licensed under the
+Apache License, Version 2.0. The original licence text is kept in
+third-party/androidtv-vban-sender-LICENSE and the ported files carry an
+attribution header. See third-party/README.md for the list.

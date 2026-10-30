@@ -1,0 +1,42 @@
+# Gradle / Android build output
+.gradle/
+build/
+**/build/
+.kotlin/
+.cxx/
+captures/
+local.properties
+*.apk.idsig
+
+# IDE and editors
+.idea/
+*.iml
+.vscode/
+*~
+*.swp
+.DS_Store
+
+# Signing material: never in git
+*.jks
+*.keystore
+keystore.properties
+*.pem
+*.p12
+
+# Logs and scratch
+*.log
+/scratch/
+
+# AI assistant local files
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.claude.json
+*.claude.md
+AGENTS.md
+GEMINI.md
+.cursor/
+.cursorrules
+.aider*
+.windsurf*
+.github/copilot-instructions.md

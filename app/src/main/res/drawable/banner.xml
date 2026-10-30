@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android TV banner, 320 x 180 dp. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path
+        android:fillColor="#1F2933"
+        android:pathData="M0,0h320v180h-320z" />
+    <!-- speaker body -->
+    <path
+        android:fillColor="#F5F7FA"
+        android:pathData="M70,70h30l40,-30v100l-40,-30h-30z" />
+    <!-- sound arcs -->
+    <path
+        android:strokeColor="#F5F7FA"
+        android:strokeWidth="8"
+        android:fillColor="#00000000"
+        android:pathData="M160,65a35,35 0 0 1 0,50" />
+    <path
+        android:strokeColor="#F5F7FA"
+        android:strokeWidth="8"
+        android:fillColor="#00000000"
+        android:pathData="M180,45a60,60 0 0 1 0,90" />
+    <path
+        android:strokeColor="#F5F7FA"
+        android:strokeWidth="8"
+        android:fillColor="#00000000"
+        android:pathData="M200,25a85,85 0 0 1 0,130" />
+</vector>
