@@ -1,66 +1,75 @@
 # Ventriloquist
 
-Throw your Android TV's voice into the speakers around the house, and keep the lips in sync.
+Throw your Android TV's voice into the speakers around the house.
 
 Ventriloquist is an Android TV app that captures what the TV is playing and sends it as a
 [VBAN](https://vb-audio.com/Voicemeeter/vban.htm) stream (PCM over UDP) to
 [Music Assistant](https://www.music-assistant.io/). Music Assistant's
 [VBAN receiver](https://www.music-assistant.io/plugins/vban-receiver/) turns the stream into a
 source that any of its players or sync groups can play: Squeezelite, Sonos, Cast, AirPlay,
-Sendspin, DLNA.
+Sendspin, DLNA. Whatever the box plays (a music app, a radio app, a video) then plays on the
+home speakers, and the remote's volume buttons control them.
 
-A networked audio path is slow compared with the TV's own speakers. On an NVIDIA Shield,
-Ventriloquist compensates: it asks the Shield's audio stack to report that much extra output
-latency, and every player that keeps video locked to the audio clock (YouTube, Plex, anything
-built on ExoPlayer) presents its picture later by the same amount. The picture and the house
-speakers then match.
+It is made for music. A networked multi-room path is seconds behind the picture, so a film's
+sound arrives late; see "Why there is no lip sync" below.
 
 ## Status
 
-Alpha, not yet proven on a device. The app holds the capture consent in a foreground service,
-captures what the box plays, sends it as VBAN, drives Music Assistant over its HTTP API, holds
-the picture back on an NVIDIA Shield, silences the TV's own speakers, and switches all of this
-on and off by itself when playback starts and ends. Every change it makes, on the box and in
-Music Assistant, is recorded first and put back afterwards, also after a crash or a reboot.
-See [docs/DESIGN.md](docs/DESIGN.md) for the design and the roadmap.
+Beta, running on an NVIDIA Shield TV. The app holds the capture consent in a foreground
+service, captures what the box plays, sends it as VBAN, drives Music Assistant over its HTTP
+API, mutes the box's own output so the TV is silent, takes the remote's volume buttons for the
+speakers, and switches all of this on and off by itself when playback starts and ends. Every
+change it makes, on the box and in Music Assistant, is recorded first and put back afterwards,
+also after a crash or a reboot. See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## How it works
 
 1. **Capture.** Android's playback-capture API (Android 10 and later) hands the app a copy of
    the audio that other apps play, after the user accepts the system's consent dialog once per
-   app start. Apps can opt out, and protected content is never captured; YouTube and Plex
-   allow it, Netflix does not.
+   app start. Apps can opt out, and protected content is never captured; YouTube, YouTube
+   Music, Plex, VLC, Jellyfin and TuneIn allow it, Netflix does not.
 2. **Send.** The PCM is packetised as VBAN (48 kHz, 16-bit, stereo, up to 256 frames per
    datagram) and sent over UDP to the Music Assistant host.
-3. **Play.** Music Assistant exposes the stream as a source. Play it on one player or on a
-   sync group and the TV's sound is everywhere.
-4. **Lip sync (NVIDIA Shield).** The Shield's own "Audio video sync" setting works by setting
-   an audio HAL parameter for the HDMI output latency. Ventriloquist sets the same parameter to
-   the measured house delay while house mode is on, and clears it when house mode is off. Other
-   Android TV devices get steps 1 to 3 only.
-5. **TV speakers.** The picture is delayed but the HDMI sound is not, so the TV's own speakers
-   would run ahead as an echo. In house mode Ventriloquist turns the box's HDMI volume to zero
-   (capture keeps full level) and restores it afterwards, also after a crash or a reboot.
-6. **Film and music.** House mode comes in two kinds. *Film* plays on a film player group,
-   delays the picture by the measured house delay, and can turn chosen speakers into rear
-   surround speakers (Music Assistant's per-player `surround` output channel: the difference
-   of left and right, as a Pro Logic style matrix decoder derives it, band limited to 100 Hz
-   to 7 kHz). *Music* plays on a music player group with no picture delay and leaves the
-   speakers' channels alone.
-7. **Automatic.** A watcher follows media sessions, active audio players and the screen. It
-   starts house mode a few seconds after playback starts, stays through a pause, and stops a
-   few minutes after playback ends or the screen goes off. It never starts inside quiet hours.
-   A local HTTP endpoint overrides it (`auto`, `off`, `film`, `music`).
+3. **Play.** Music Assistant exposes the stream as a source and plays it on the configured
+   player or sync group.
+4. **TV speakers.** While the home speakers play, the app mutes the box's media output
+   (`ADJUST_MUTE`), so the TV receives silence; capture is not affected, it records the mix at
+   full level. The volume index is never stepped: on a box that controls the TV's volume (the
+   Shield does, by infrared or HDMI-CEC) an index change becomes a volume command to the TV.
+   Optionally a Home Assistant automation mutes the TV as well (see below).
+5. **Volume buttons.** An accessibility service sees the remote's volume buttons before the
+   system does. While the home speakers play it takes them and moves the speakers' volume
+   (Music Assistant's group volume, which scales every member), within a configurable maximum,
+   with a short message on screen. At any other time the buttons are left alone.
+6. **Automatic.** A watcher follows media sessions, active audio players and the screen. Any
+   app counts. House mode starts a few seconds after playback starts, stays through a pause,
+   and stops a few minutes after playback ends or the screen goes off. Nothing starts inside
+   quiet hours, and a running session stops when they begin: the TV keeps its own speakers at
+   night.
+7. **Settings screen.** Open the app from the launcher: choose the home speakers or the TV
+   speakers, the speaker group, what the volume buttons do, the volume step and maximum, whether
+   the TV is muted, the quiet hours and how long after playback the TV gets its sound back.
+   Everything works with the remote's arrows and OK. Addresses and tokens are set at
+   provisioning time and are not shown.
+8. **Home Assistant (optional).** The app posts `house_started` and `house_stopped` to a
+   Home Assistant webhook, and `GET /status` can be polled; an example package is in
+   [docs/home-assistant.md](docs/home-assistant.md).
+
+### Why there is no lip sync
+
+Version 0.3 tried to hold the picture back by the house delay through the Shield's HDMI
+latency parameter (`nv_param_audio_hdmi_hw_latency`, the value behind the Shield's own
+"Audio video sync" setting). On the device the parameter accepts 0 to 5000 ms, ExoPlayer apps
+(Plex) follow it, but YouTube's player hangs above about 1,2 s, and the speaker path (VBAN,
+Music Assistant's live-source buffering, mp3 to Squeezelite players over Wi-Fi) measured about
+8 s. With no player able to wait that long, 0.4 dropped the attempt: the parameter is never
+touched, and a film's sound on the home speakers arrives late.
 
 ## Requirements
 
-- An Android TV device on Android 11 (API 30) or later. Lip-sync compensation needs an NVIDIA
-  Shield.
+- An Android TV device on Android 11 (API 30) or later.
 - Music Assistant 2.x with the VBAN receiver plugin enabled, configured with the TV's address as
   the sender, the stream name used by the app, 48000 Hz, S16LE, 2 channels, and an API token.
-- For film mode's rear speakers: a Music Assistant build whose per-player output channels offer
-  `surround`. Stock builds offer stereo, left, right and mono; leave `surround_player_ids` empty
-  there and film mode changes no channels.
 - A way to run `adb` against the TV, for installation, for granting what the TV's user interface
   cannot grant, and for the first configuration.
 
@@ -96,11 +105,16 @@ adb shell pm grant $P android.permission.WRITE_SECURE_SETTINGS   # surround outp
 adb shell pm grant $P android.permission.RECORD_AUDIO
 adb shell appops set $P SYSTEM_ALERT_WINDOW allow                # consent screen at boot
 adb shell cmd notification allow_listener $P/$P.NotificationListener   # media sessions
+adb shell settings put secure enabled_accessibility_services $P/$P.VolumeKeyService
+adb shell settings put secure accessibility_enabled 1            # volume buttons
 B64=$(base64 -w0 config.json)
 adb shell am broadcast --include-stopped-packages -n $P/.ConfigReceiver \
     -a $P.action.CONFIGURE --es json_b64 $B64
 adb shell am start -n $P/.ConsentActivity                         # accept the dialog once
 ```
+
+Setting `enabled_accessibility_services` replaces the list: if other services are enabled,
+append to the existing value (colon separated) instead.
 
 The configuration broadcast answers `result=0, data="ok: updated ..."` or `result=1,
 data="error: ..."`. Its receiver requires `android.permission.DUMP`, which the adb shell holds
@@ -118,14 +132,19 @@ only re-arms the access, without a dialog.
 | `control_token` | none | Bearer token of the control endpoint (16 characters or more) |
 | `ma_url`, `ma_token` | none | Music Assistant base URL and API token |
 | `source_uri` | none | URI of the VBAN receiver's audio source in Music Assistant |
-| `film_player_id`, `music_player_id` | none | Player (or group) that plays the source in each mode |
-| `surround_player_ids` | `[]` | Players switched to the `surround` output channel in film mode |
-| `surround_sync_adjust_ms` | -15 | Their `sync_adjust` during film mode |
+| `player_id` | none | Player or group that plays the source (settings screen: Speakers) |
 | `vban_host`, `vban_port`, `vban_stream` | none, 6980, `TV` | Where the VBAN stream goes |
-| `film_latency_ms` | 0 | HDMI latency in film mode: the measured house delay |
-| `quiet_start`, `quiet_end` | `23:00`, `08:00` | Local time window in which nothing starts |
-| `film_packages`, `music_packages` | `[]` | Apps that always mean film or music |
+| `enabled` | true | Automatic house mode; false keeps the TV speakers (settings screen: Sound) |
+| `mute_box` | true | Mute the box's output while the home speakers play |
+| `volume_keys` | true | The remote's volume buttons drive the speakers while they play |
+| `volume_step`, `max_volume` | 2, 40 | Points per button press; the highest level the buttons reach |
+| `quiet_start`, `quiet_end` | `23:00`, `08:00` | Local time window in which the home speakers are not used |
 | `start_debounce_s`, `stop_delay_s` | 3, 180 | Playback time before a start; idle or screen-off time before a stop |
+| `ha_webhook_url` | none | Home Assistant webhook told about every start and stop |
+
+Android blocks plain `http://` from apps, so `ma_url` and `ha_webhook_url` must be `https://`
+(a reverse proxy in front of the service will do). A configuration stored by 0.3 is migrated:
+`music_player_id` becomes `player_id`, the film keys are dropped.
 
 ## Control endpoint
 
@@ -134,19 +153,17 @@ Port 8770, HTTP/1.1, JSON in and out, `Authorization: Bearer <control_token>` on
 
 | Request | Does |
 |---|---|
-| `GET /status` | Consent, mode, override, target, latency read back, HDMI volume, surround setting, watcher view, capture levels, packets sent, errors, what is recorded for restore |
-| `GET /latency` | The HDMI latency the audio HAL reports |
-| `POST /latency {"ms":N}` | Sets it (0 to 5000) and returns the read-back |
-| `POST /latency/step {"ms":±N}` | Moves `film_latency_ms` (stored), applied at once in film mode: for calibration |
-| `POST /tv-mute {"on":true}` | Mutes or restores the HDMI volume |
+| `GET /status` | Consent, mode, target, volume, box mute, surround setting, watcher view, capture levels, packets sent, errors, what is recorded for restore |
+| `GET /players` | The players and groups Music Assistant offers, and the selected one |
+| `POST /mode {"mode":"auto"}` | `auto` (home speakers, stored), `off` (TV speakers, stored), `on` (start now, refused in quiet hours) |
+| `POST /volume {"steps":±N}` | Moves the speakers' volume by N steps while they play, like the buttons |
 | `POST /capture-test {"seconds":N}` | Captures for N seconds (1 to 30), returns RMS and peak per channel in dBFS |
-| `POST /mode {"mode":"auto"}` | Override: `auto`, `off`, `film` or `music` (manual starts refused in quiet hours) |
 | `POST /config {...}` | Same keys as the broadcast |
-| `POST /restore` | Stops house mode, puts everything back, sets the override to `off` |
+| `POST /restore` | Stops house mode and puts everything back |
 
 ```sh
 curl -s -H "Authorization: Bearer $TOKEN" http://<tv-address>:8770/status
-curl -s -H "Authorization: Bearer $TOKEN" -d '{"mode":"film"}' http://<tv-address>:8770/mode
+curl -s -H "Authorization: Bearer $TOKEN" -d '{"mode":"off"}' http://<tv-address>:8770/mode
 ```
 
 ## Prior art and credits

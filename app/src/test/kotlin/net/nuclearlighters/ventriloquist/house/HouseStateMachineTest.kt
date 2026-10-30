@@ -13,282 +13,213 @@ class HouseStateMachineTest {
         override fun minuteOfDay() = minute
     }
 
-    private val t = Timing(debounceMs = 3_000, stopDelayMs = 180_000, quietStartMinute = 23 * 60, quietEndMinute = 8 * 60)
-    private val film = Observation(Activity.PLAYING, HouseMode.FILM, "com.example.video")
-    private val music = Observation(Activity.PLAYING, HouseMode.MUSIC, "com.example.music")
-    private val paused = Observation(Activity.PAUSED, HouseMode.FILM, "com.example.video")
-    private val idle = Observation(Activity.IDLE, HouseMode.FILM)
+    private val r = Rules(enabled = true, debounceMs = 3_000, stopDelayMs = 180_000, quietStartMinute = 23 * 60, quietEndMinute = 8 * 60)
+    private val off = r.copy(enabled = false)
+    private val playing = Observation(Activity.PLAYING, "com.example.video")
+    private val paused = Observation(Activity.PAUSED, "com.example.video")
+    private val idle = Observation(Activity.IDLE)
 
-    private fun machine(clock: Clock) = HouseStateMachine(clock)
-
-    private fun runningFilm(clock: Clock): HouseStateMachine {
-        val m = machine(clock)
-        m.observe(film)
+    private fun running(clock: Clock): HouseStateMachine {
+        val m = HouseStateMachine(clock)
+        m.observe(playing)
         clock.now += 3_000
-        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t))
+        assertEquals(Action.START, m.evaluate(r))
         return m
     }
 
     @Test
     fun startsOnlyAfterTheDebounce() {
         val clock = Clock()
-        val m = machine(clock)
-        m.observe(film)
-        assertNull(m.evaluate(t))
+        val m = HouseStateMachine(clock)
+        m.observe(playing)
+        assertNull(m.evaluate(r))
         clock.now = 2_999
-        assertNull(m.evaluate(t))
+        assertNull(m.evaluate(r))
         clock.now = 3_000
-        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t))
-        assertEquals(HouseMode.FILM, m.running)
-        assertNull(m.evaluate(t))
+        assertEquals(Action.START, m.evaluate(r))
+        assertTrue(m.running)
+        assertNull(m.evaluate(r))
     }
 
     @Test
     fun aShortBlipDoesNotStart() {
         val clock = Clock()
-        val m = machine(clock)
-        m.observe(film)
+        val m = HouseStateMachine(clock)
+        m.observe(playing)
         clock.now = 2_000
         m.observe(idle)
-        m.observe(film)
+        m.observe(playing)
         clock.now = 4_000
-        assertNull(m.evaluate(t)) // the debounce restarted at 2 s
+        assertNull(m.evaluate(r)) // the debounce restarted at 2 s
         clock.now = 5_000
-        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t))
+        assertEquals(Action.START, m.evaluate(r))
     }
 
     @Test
-    fun staysThroughAPause() {
+    fun aPauseKeepsItAndPlaybackEndedStopsAfterTheDelay() {
         val clock = Clock()
-        val m = runningFilm(clock)
+        val m = running(clock)
         m.observe(paused)
-        clock.now += 60 * 60 * 1000L
-        m.observe(paused)
-        assertNull(m.evaluate(t))
-        assertEquals(HouseMode.FILM, m.running)
+        clock.now += 600_000
+        assertNull(m.evaluate(r)) // paused for ten minutes: still on
+        m.observe(idle)
+        clock.now += 179_999
+        assertNull(m.evaluate(r))
+        clock.now += 1
+        assertEquals(Action.STOP, m.evaluate(r))
+        assertFalse(m.running)
     }
 
     @Test
-    fun stopsWhenPlaybackHasEndedForTheStopDelay() {
+    fun playbackComingBackWithinTheDelayKeepsIt() {
         val clock = Clock()
-        val m = runningFilm(clock)
+        val m = running(clock)
         m.observe(idle)
-        val ended = clock.now
-        clock.now = ended + 179_999
-        m.observe(idle)
-        assertNull(m.evaluate(t))
-        clock.now = ended + 180_000
-        assertEquals(Action.Stop, m.evaluate(t))
-        assertNull(m.running)
+        clock.now += 120_000
+        m.observe(playing)
+        clock.now += 120_000
+        assertNull(m.evaluate(r))
+        assertTrue(m.running)
     }
 
     @Test
-    fun playbackResumedWithinTheDelayKeepsRunning() {
+    fun screenOffStopsAfterTheDelayAndBlocksAStart() {
         val clock = Clock()
-        val m = runningFilm(clock)
-        m.observe(idle)
-        clock.now += 100_000
-        m.observe(film)
-        clock.now += 200_000
-        assertNull(m.evaluate(t))
-        assertEquals(HouseMode.FILM, m.running)
-    }
-
-    @Test
-    fun screenOffStopsAfterTheDelayAndBlocksStarts() {
-        val clock = Clock()
-        val m = runningFilm(clock)
+        val m = running(clock)
         m.screen(false)
-        val off = clock.now
-        clock.now = off + 179_000
-        assertNull(m.evaluate(t))
-        clock.now = off + 180_000
-        assertEquals(Action.Stop, m.evaluate(t))
+        clock.now += 179_999
+        assertNull(m.evaluate(r))
+        clock.now += 1
+        assertEquals(Action.STOP, m.evaluate(r))
 
-        clock.now += 10_000
-        m.observe(film)
-        clock.now += 5_000
-        assertNull(m.evaluate(t))
-        assertEquals("screen off", m.blocked)
-        m.screen(true)
-        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t))
+        val n = HouseStateMachine(Clock())
+        n.screen(false)
+        n.observe(playing)
+        assertNull(n.evaluate(r.copy(debounceMs = 0)))
+        assertEquals("screen off", n.blocked)
     }
 
     @Test
-    fun neverStartsInQuietHoursButLetsARunningModeFinish() {
+    fun nothingStartsInQuietHours() {
         val clock = Clock(minute = 23 * 60 + 5)
-        val m = machine(clock)
-        m.observe(film)
+        val m = HouseStateMachine(clock)
+        m.observe(playing)
         clock.now = 10_000
-        assertNull(m.evaluate(t))
+        assertNull(m.evaluate(r))
         assertEquals("quiet hours", m.blocked)
-
-        val clock2 = Clock(minute = 22 * 60 + 59)
-        val m2 = runningFilm(clock2)
-        clock2.minute = 23 * 60 + 30
-        m2.observe(film)
-        assertNull(m2.evaluate(t))
-        assertEquals(HouseMode.FILM, m2.running)
-        m2.observe(idle)
-        clock2.now += 180_000
-        assertEquals(Action.Stop, m2.evaluate(t))
-        m2.observe(film)
-        clock2.now += 10_000
-        assertNull(m2.evaluate(t))
+        clock.minute = 7 * 60 + 59
+        assertNull(m.evaluate(r))
+        clock.minute = 8 * 60
+        assertEquals(Action.START, m.evaluate(r))
     }
 
     @Test
-    fun quietHoursWrapAroundMidnight() {
-        val clock = Clock()
-        val m = machine(clock)
-        val cases = mapOf(22 * 60 + 59 to false, 23 * 60 to true, 0 to true, 7 * 60 + 59 to true, 8 * 60 to false, 12 * 60 to false)
-        for ((minute, quiet) in cases) {
-            clock.minute = minute
-            assertEquals("minute $minute", quiet, m.inQuietHours(t))
-        }
-        val daytime = Timing(3_000, 180_000, 9 * 60, 17 * 60)
-        clock.minute = 12 * 60
-        assertTrue(m.inQuietHours(daytime))
-        clock.minute = 17 * 60
-        assertFalse(m.inQuietHours(daytime))
-        val none = Timing(3_000, 180_000, 8 * 60, 8 * 60)
-        assertFalse(m.inQuietHours(none))
+    fun quietHoursStopARunningSessionAtOnce() {
+        val clock = Clock(minute = 22 * 60 + 59)
+        val m = running(clock)
+        assertNull(m.evaluate(r))
+        clock.minute = 23 * 60
+        assertEquals(Action.STOP, m.evaluate(r))
+        assertNull(m.evaluate(r))
     }
 
     @Test
-    fun switchesBetweenFilmAndMusicAfterTheDebounce() {
-        val clock = Clock()
-        val m = runningFilm(clock)
-        m.observe(music)
-        val changed = clock.now
-        clock.now = changed + 2_999
-        assertNull(m.evaluate(t))
-        clock.now = changed + 3_000
-        assertEquals(Action.Switch(HouseMode.MUSIC), m.evaluate(t))
-        assertEquals(HouseMode.MUSIC, m.running)
-        assertNull(m.evaluate(t))
+    fun quietHoursMayNotCrossMidnightOrBeOff() {
+        val clock = Clock(minute = 13 * 60)
+        val m = HouseStateMachine(clock)
+        assertTrue(m.inQuietHours(r.copy(quietStartMinute = 12 * 60, quietEndMinute = 14 * 60)))
+        assertFalse(m.inQuietHours(r.copy(quietStartMinute = 14 * 60, quietEndMinute = 16 * 60)))
+        assertFalse(m.inQuietHours(r.copy(quietStartMinute = 0, quietEndMinute = 0)))
+        clock.minute = 2 * 60
+        assertTrue(m.inQuietHours(r))
     }
 
     @Test
-    fun offStopsAtOnceAndAutoResumes() {
+    fun disabledStopsAtOnceAndStartsNothing() {
         val clock = Clock()
-        val m = runningFilm(clock)
-        assertTrue(m.setOverride(ModeOverride.OFF, t))
-        assertEquals(Action.Stop, m.evaluate(t))
-        clock.now += 10_000
-        m.observe(film)
-        assertNull(m.evaluate(t))
-        assertTrue(m.setOverride(ModeOverride.AUTO, t))
-        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t))
+        val m = running(clock)
+        assertEquals(Action.STOP, m.evaluate(off))
+        clock.now += 60_000
+        assertNull(m.evaluate(off))
+        assertNull(m.blocked)
+        assertEquals(Action.START, m.evaluate(r)) // enabled again while it plays
     }
 
     @Test
-    fun manualModeRunsWithoutPlaybackAndIsRefusedInQuietHours() {
+    fun aManualStartRunsWithoutPlaybackUntilStopped() {
         val clock = Clock()
-        val m = machine(clock)
-        assertTrue(m.setOverride(ModeOverride.MUSIC, t))
-        assertEquals(Action.Start(HouseMode.MUSIC), m.evaluate(t))
-        m.observe(idle)
-        clock.now += 60 * 60 * 1000L
-        assertNull(m.evaluate(t)) // a manual mode ignores the playback stop rule
-        assertTrue(m.setOverride(ModeOverride.FILM, t))
-        assertEquals(Action.Switch(HouseMode.FILM), m.evaluate(t))
-
-        val night = Clock(minute = 2 * 60)
-        val n = machine(night)
-        assertFalse(n.setOverride(ModeOverride.FILM, t))
-        assertEquals(ModeOverride.AUTO, n.override)
-        assertTrue(n.setOverride(ModeOverride.OFF, t))
+        val m = HouseStateMachine(clock)
+        assertTrue(m.startNow(off))
+        assertEquals(Action.START, m.evaluate(off))
+        clock.now += 3_600_000
+        assertNull(m.evaluate(off)) // nothing plays, still held on by hand
+        m.stopNow()
+        assertEquals(Action.STOP, m.evaluate(off))
     }
 
     @Test
-    fun aManualModeEndsWhenTheScreenStaysOff() {
+    fun aManualStartIsRefusedInQuietHoursAndEndsWhenTheyBegin() {
+        val clock = Clock(minute = 23 * 60 + 30)
+        val m = HouseStateMachine(clock)
+        assertFalse(m.startNow(r))
+        assertFalse(m.manual)
+        clock.minute = 22 * 60 + 50
+        assertTrue(m.startNow(r))
+        assertEquals(Action.START, m.evaluate(r))
+        clock.minute = 23 * 60
+        assertEquals(Action.STOP, m.evaluate(r))
+        assertFalse(m.manual)
+    }
+
+    @Test
+    fun aManualStartEndsWhenTheScreenHasBeenOff() {
         val clock = Clock()
-        val m = machine(clock)
-        m.setOverride(ModeOverride.FILM, t)
-        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t))
+        val m = HouseStateMachine(clock)
+        m.startNow(r)
+        assertEquals(Action.START, m.evaluate(r))
         m.screen(false)
         clock.now += 180_000
-        assertEquals(Action.Stop, m.evaluate(t))
-        assertEquals(ModeOverride.AUTO, m.override)
+        assertEquals(Action.STOP, m.evaluate(r))
+        assertFalse(m.manual)
     }
 
     @Test
-    fun handOverToAutoRestartsTheStopDelay() {
+    fun aFailedStartWaitsUnlessPlaybackStartsAnew() {
         val clock = Clock()
-        val m = machine(clock)
-        m.observe(idle)
-        m.setOverride(ModeOverride.FILM, t)
-        m.evaluate(t)
-        clock.now += 60 * 60 * 1000L
-        m.observe(idle)
-        m.setOverride(ModeOverride.AUTO, t)
-        clock.now += 179_000
-        assertNull(m.evaluate(t))
-        clock.now += 1_000
-        assertEquals(Action.Stop, m.evaluate(t))
-    }
-
-    @Test
-    fun aFailedStartWaitsBeforeTryingAgain() {
-        val clock = Clock()
-        val m = runningFilm(clock)
+        val m = running(clock)
         m.startFailed()
-        assertNull(m.running)
-        clock.now += 60_000
-        m.observe(film)
-        assertNull(m.evaluate(t))
+        clock.now += 1_000
+        assertNull(m.evaluate(r))
         assertEquals("waiting after a failed start", m.blocked)
         clock.now += HouseStateMachine.RETRY_MS
-        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t))
-
+        assertEquals(Action.START, m.evaluate(r))
         m.startFailed()
-        m.observe(idle) // playback ended: the next playback gets a fresh attempt
-        m.observe(film)
+        m.observe(idle)
+        m.observe(playing)
         clock.now += 3_000
-        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t))
+        assertEquals(Action.START, m.evaluate(r))
     }
 
     @Test
-    fun aBlockedStartWaitsWithoutBackOffAndGoesAheadOnceClear() {
+    fun aBlockedStartWaitsWithoutBackOff() {
         val clock = Clock()
-        val m = machine(clock)
-        var reason: String? = "not configured: ma_url"
-        m.observe(film)
-        clock.now = 5_000
-        assertNull(m.evaluate(t) { reason })
-        assertEquals("not configured: ma_url", m.blocked)
-        assertNull(m.running)
-        reason = null
-        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t) { reason })
-
-        val manual = machine(Clock())
-        manual.setOverride(ModeOverride.MUSIC, t)
-        assertNull(manual.evaluate(t) { mode -> if (mode == HouseMode.MUSIC) "capture access: needs_visible_start" else null })
-        assertEquals("capture access: needs_visible_start", manual.blocked)
-        assertEquals(ModeOverride.MUSIC, manual.override)
-        assertEquals(Action.Start(HouseMode.MUSIC), manual.evaluate(t))
+        val m = HouseStateMachine(clock)
+        m.observe(playing)
+        clock.now = 3_000
+        assertNull(m.evaluate(r) { "capture consent needed" })
+        assertEquals("capture consent needed", m.blocked)
+        assertFalse(m.running)
+        assertEquals(Action.START, m.evaluate(r) { null })
     }
 
     @Test
-    fun aBlockedSwitchKeepsTheRunningMode() {
+    fun anOutsideStopEndsItQuietly() {
         val clock = Clock()
-        val m = runningFilm(clock)
-        m.observe(music)
-        clock.now += 3_000
-        assertNull(m.evaluate(t) { mode -> if (mode == HouseMode.MUSIC) "not configured: music_player_id" else null })
-        assertEquals(HouseMode.FILM, m.running)
-        assertEquals("not configured: music_player_id", m.blocked)
-    }
-
-    @Test
-    fun aFailedManualStartFallsBackToAuto() {
-        val clock = Clock()
-        val m = machine(clock)
-        m.setOverride(ModeOverride.FILM, t)
-        assertEquals(Action.Start(HouseMode.FILM), m.evaluate(t))
-        m.startFailed()
-        assertEquals(ModeOverride.AUTO, m.override)
-        assertNull(m.evaluate(t))
+        val m = running(clock)
+        m.stopped()
+        assertFalse(m.running)
+        m.observe(idle)
+        clock.now += 300_000
+        assertNull(m.evaluate(r))
     }
 }

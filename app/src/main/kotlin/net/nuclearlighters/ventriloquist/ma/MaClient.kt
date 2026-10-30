@@ -7,16 +7,23 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
+/** A player or group as the settings screen lists it. */
+data class MaPlayer(val id: String, val name: String, val group: Boolean, val available: Boolean)
+
 /** The Music Assistant commands house mode uses. */
 interface MaApi {
-    /** Current values of [keys] in the player's configuration; keys the player lacks are absent. */
-    fun getPlayerValues(playerId: String, keys: List<String>): Map<String, Any?>
-
-    fun savePlayerValues(playerId: String, values: Map<String, Any?>)
-
     fun playMedia(queueId: String, media: String)
 
     fun stop(playerId: String)
+
+    /** The level (0..100) a group plays at, or a single player's volume; null when unknown. */
+    fun volume(playerId: String): Int?
+
+    /** Sets the level of a group as a whole (every member scaled), or of a single player. */
+    fun setGroupVolume(playerId: String, level: Int)
+
+    /** Every enabled, visible player and group. */
+    fun players(): List<MaPlayer>
 }
 
 /** A Music Assistant call that failed: transport, HTTP status or an error object. */
@@ -77,22 +84,6 @@ class MaClient(
         }
     }
 
-    override fun getPlayerValues(playerId: String, keys: List<String>): Map<String, Any?> {
-        val config = call("config/players/get", mapOf("player_id" to playerId)) as? Map<*, *>
-            ?: throw MaException("config/players/get: reply is not an object")
-        val values = config["values"] as? Map<*, *> ?: emptyMap<Any?, Any?>()
-        val result = LinkedHashMap<String, Any?>()
-        for (key in keys) {
-            if (!values.containsKey(key)) continue
-            result[key] = entryValue(values[key])
-        }
-        return result
-    }
-
-    override fun savePlayerValues(playerId: String, values: Map<String, Any?>) {
-        call("config/players/save", mapOf("player_id" to playerId, "values" to values))
-    }
-
     override fun playMedia(queueId: String, media: String) {
         call("player_queues/play_media", mapOf("queue_id" to queueId, "media" to media, "option" to "replace"))
     }
@@ -101,14 +92,26 @@ class MaClient(
         call("players/cmd/stop", mapOf("player_id" to playerId))
     }
 
-    companion object {
-        const val OUTPUT_CHANNELS = "output_channels"
-        const val SYNC_ADJUST = "sync_adjust"
+    override fun volume(playerId: String): Int? {
+        val p = call("players/get", mapOf("player_id" to playerId)) as? Map<*, *>
+            ?: throw MaException("players/get: reply is not an object")
+        val v = if (p["type"] == "group") p["group_volume"] else p["volume_level"] ?: p["group_volume"]
+        return (v as? Number)?.toInt()
+    }
 
-        /** A config entry serialises as an object with `value` (null means the default). */
-        fun entryValue(entry: Any?): Any? = when (entry) {
-            is Map<*, *> -> entry["value"] ?: entry["default_value"]
-            else -> entry
-        }
+    override fun setGroupVolume(playerId: String, level: Int) {
+        call("players/cmd/group_volume", mapOf("player_id" to playerId, "volume_level" to level.coerceIn(0, 100)))
+    }
+
+    override fun players(): List<MaPlayer> {
+        val all = call("players/all", emptyMap()) as? List<*>
+            ?: throw MaException("players/all: reply is not a list")
+        return all.mapNotNull { item ->
+            val p = item as? Map<*, *> ?: return@mapNotNull null
+            val id = p["player_id"] as? String ?: return@mapNotNull null
+            if (p["enabled"] == false || p["hidden"] == true) return@mapNotNull null
+            val name = (p["display_name"] as? String)?.takeIf { it.isNotBlank() } ?: p["name"] as? String ?: id
+            MaPlayer(id, name, p["type"] == "group", p["available"] != false)
+        }.sortedWith(compareBy({ !it.group }, { it.name.lowercase() }))
     }
 }

@@ -2,11 +2,8 @@ package net.nuclearlighters.ventriloquist.house
 
 import net.nuclearlighters.ventriloquist.config.Config
 import net.nuclearlighters.ventriloquist.ma.MaApi
-import net.nuclearlighters.ventriloquist.ma.MaClient
-import net.nuclearlighters.ventriloquist.shield.LatencyModule
+import net.nuclearlighters.ventriloquist.shield.ShieldModule
 import net.nuclearlighters.ventriloquist.store.Ledger
-
-enum class HouseMode { FILM, MUSIC }
 
 /** Capture plus VBAN sending; started and stopped by the house session. */
 interface Streamer {
@@ -21,24 +18,21 @@ interface Streamer {
 /**
  * The house-mode sequences.
  *
- * Film: save `output_channels` and `sync_adjust` of every surround player, set them to
- * `surround` and the configured sync adjustment; HDMI latency to `film_latency_ms`; TV muted;
- * surround output PCM; capture and VBAN on; play the source on the film player.
- * Music: the same without the channel change, with latency 0 (no picture to wait for), on the
- * music player. Stop: stop the playing player, stop capture, put the players' settings back,
- * then the Shield's.
+ * Start: surround output PCM; the box's media output muted (when `mute_box`), so the TV
+ * receives silence; capture and VBAN on; the source played on the configured player.
+ * Stop: stop that player, stop capture, then put the box back (the TV sound returns last).
  *
- * Every Music Assistant change is recorded in [maLedger] before it is made (and the playing
- * player as a marker), like the Shield's in the latency module, so [stop] also cleans up after
- * a crash. Not thread-safe: call from one thread.
+ * The playing player is recorded in [maLedger] before it is told to play, like the box's
+ * changes in the shield module, so [stop] also cleans up after a crash. Not thread-safe: call
+ * from one thread.
  */
 class HouseSession(
-    private val shield: LatencyModule,
+    private val shield: ShieldModule,
     private val maLedger: Ledger,
     private val maFactory: (Config) -> MaApi,
     private val streamer: Streamer,
 ) {
-    var mode: HouseMode? = null
+    var running = false
         private set
 
     var target: String? = null
@@ -51,46 +45,20 @@ class HouseSession(
 
     fun maOriginals(): Map<String, Any?> = maLedger.snapshot()
 
-    /**
-     * Starts [newMode], or switches to it from the other mode (the Shield side stays as it is,
-     * the Music Assistant side moves to the other player). On failure everything is put back
-     * and the exception is rethrown.
-     */
-    fun start(newMode: HouseMode, config: Config) {
-        val missing = config.missingForHouse(film = newMode == HouseMode.FILM)
+    /** Starts house mode. On failure everything is put back and the exception is rethrown. */
+    fun start(config: Config) {
+        val missing = config.missingForHouse()
         if (missing.isNotEmpty()) throw IllegalStateException("not configured: ${missing.joinToString(", ")}")
-        if (mode == newMode) return
+        if (running) return
         val ma = maFactory(config)
         try {
-            if (mode != null) leaveMusicAssistant(ma)
-            if (newMode == HouseMode.FILM) {
-                for (player in config.surroundPlayerIds) {
-                    val current = ma.getPlayerValues(player, CHANNEL_KEYS)
-                    val absent = CHANNEL_KEYS.filter { it !in current }
-                    if (absent.isNotEmpty()) {
-                        throw IllegalStateException("player $player has no ${absent.joinToString(", ")}")
-                    }
-                    maLedger.recordOriginal(PLAYER_PREFIX + player, current)
-                    ma.savePlayerValues(
-                        player,
-                        mapOf(
-                            MaClient.OUTPUT_CHANNELS to SURROUND,
-                            MaClient.SYNC_ADJUST to config.surroundSyncAdjustMs,
-                        ),
-                    )
-                }
-            }
-            shield.setLatency(if (newMode == HouseMode.FILM) config.filmLatencyMs else 0)
-            // a box that turns its volume into infrared commands to the TV (the Shield does)
-            // cannot give the old level back exactly, so muting is a per-device choice
-            if (config.tvMute) shield.setTvMuted(true)
             shield.setSurroundPcm(true)
+            if (config.muteBox) shield.setBoxMuted(true)
             streamer.start(config)
-            val player = if (newMode == HouseMode.FILM) config.filmPlayerId else config.musicPlayerId
-            maLedger.put(K_PLAYING, player)
-            ma.playMedia(player, config.sourceUri)
-            mode = newMode
-            target = player
+            maLedger.put(K_PLAYING, config.playerId)
+            ma.playMedia(config.playerId, config.sourceUri)
+            running = true
+            target = config.playerId
             lastMaError = null
         } catch (e: Exception) {
             lastMaError = "${e.javaClass.simpleName}: ${e.message}"
@@ -105,78 +73,65 @@ class HouseSession(
      */
     fun stop(config: Config): List<String> {
         val errors = mutableListOf<String>()
-        val ma: MaApi? = if (config.maUrl.isNotEmpty()) {
-            try {
-                maFactory(config)
-            } catch (e: Exception) {
-                errors.add("music assistant: ${e.message}")
-                null
-            }
-        } else {
-            null
-        }
         (maLedger.get(K_PLAYING) as? String)?.let { player ->
-            if (ma == null) {
+            if (config.maUrl.isEmpty()) {
                 errors.add("stop $player: ma_url not configured")
             } else {
                 try {
-                    ma.stop(player)
+                    maFactory(config).stop(player)
                     maLedger.clear(K_PLAYING)
                 } catch (e: Exception) {
                     errors.add("stop $player: ${e.message}")
                 }
             }
         }
+        // anything else an older version recorded (film-mode player settings) is dropped
+        for (name in maLedger.names().filter { it != K_PLAYING }) maLedger.clear(name)
         try {
             streamer.stop()
         } catch (e: Exception) {
             errors.add("streamer: ${e.message}")
         }
-        if (ma != null) {
-            errors += restorePlayers(ma)
-        } else if (maLedger.names().any { it.startsWith(PLAYER_PREFIX) }) {
-            errors.add("player settings: ma_url not configured")
-        }
         errors += shield.restore()
-        mode = null
+        running = false
         target = null
         if (errors.isNotEmpty()) lastMaError = errors.joinToString("; ")
         return errors
     }
 
-    /** Applies a new film latency while film mode runs; returns the read-back, or null when idle. */
-    fun applyFilmLatency(ms: Int): LatencyModule.LatencyReading? =
-        if (mode == HouseMode.FILM) shield.setLatency(ms) else null
-
-    private fun leaveMusicAssistant(ma: MaApi) {
-        (maLedger.get(K_PLAYING) as? String)?.let { player ->
-            ma.stop(player)
-            maLedger.clear(K_PLAYING)
-        }
-        val errors = restorePlayers(ma)
-        if (errors.isNotEmpty()) throw IllegalStateException(errors.joinToString("; "))
-    }
-
-    private fun restorePlayers(ma: MaApi): List<String> {
-        val errors = mutableListOf<String>()
-        for (name in maLedger.names().filter { it.startsWith(PLAYER_PREFIX) }) {
-            val player = name.removePrefix(PLAYER_PREFIX)
-            @Suppress("UNCHECKED_CAST")
-            val values = maLedger.get(name) as? Map<String, Any?>
-            try {
-                if (values != null && values.isNotEmpty()) ma.savePlayerValues(player, values)
-                maLedger.clear(name)
-            } catch (e: Exception) {
-                errors.add("restore $player: ${e.message}")
-            }
-        }
-        return errors
+    /**
+     * Moves the playing player's volume by [steps] volume steps (negative is down), within
+     * 0 and `max_volume`; [known] is a level read or set moments ago, saving a round trip.
+     * Returns the new level, or null when house mode is not running.
+     */
+    fun nudgeVolume(steps: Int, config: Config, known: Int?): Int? {
+        val player = target ?: return null
+        if (!running) return null
+        if (steps == 0) return known
+        val ma = maFactory(config)
+        val base = known ?: ma.volume(player) ?: return null
+        val next = VolumeMath.next(base, steps, config.volumeStep, config.maxVolume)
+        if (next != base) ma.setGroupVolume(player, next)
+        return next
     }
 
     companion object {
-        const val SURROUND = "surround"
         const val K_PLAYING = "playing"
-        const val PLAYER_PREFIX = "player:"
-        val CHANNEL_KEYS = listOf(MaClient.OUTPUT_CHANNELS, MaClient.SYNC_ADJUST)
+    }
+}
+
+/** The volume buttons' arithmetic, kept pure for tests. */
+object VolumeMath {
+    /**
+     * The level after [steps] presses of [step] points from [base]. Up never goes past [max]
+     * (and never lowers a level someone set above it); down stops at 0.
+     */
+    fun next(base: Int, steps: Int, step: Int, max: Int): Int {
+        val wanted = base + steps * step
+        return if (steps > 0) {
+            minOf(wanted, maxOf(base, max)).coerceIn(0, 100)
+        } else {
+            wanted.coerceIn(0, 100)
+        }
     }
 }

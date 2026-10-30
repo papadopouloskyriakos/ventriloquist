@@ -18,24 +18,24 @@ import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import android.widget.Toast
 import net.nuclearlighters.ventriloquist.capture.CaptureController
 import net.nuclearlighters.ventriloquist.config.Config
 import net.nuclearlighters.ventriloquist.config.ConfigStore
 import net.nuclearlighters.ventriloquist.control.ApiException
 import net.nuclearlighters.ventriloquist.control.ControlApi
 import net.nuclearlighters.ventriloquist.control.ControlBackend
+import net.nuclearlighters.ventriloquist.ha.HaNotifier
 import net.nuclearlighters.ventriloquist.house.Action
 import net.nuclearlighters.ventriloquist.house.HouseClock
-import net.nuclearlighters.ventriloquist.house.HouseMode
 import net.nuclearlighters.ventriloquist.house.HouseSession
 import net.nuclearlighters.ventriloquist.house.HouseStateMachine
-import net.nuclearlighters.ventriloquist.house.ModeOverride
-import net.nuclearlighters.ventriloquist.house.Timing
+import net.nuclearlighters.ventriloquist.house.Rules
 import net.nuclearlighters.ventriloquist.house.VbanStreamer
 import net.nuclearlighters.ventriloquist.http.HttpServer
 import net.nuclearlighters.ventriloquist.ma.MaClient
 import net.nuclearlighters.ventriloquist.shield.AndroidAudioControls
-import net.nuclearlighters.ventriloquist.shield.LatencyModule
+import net.nuclearlighters.ventriloquist.shield.ShieldModule
 import net.nuclearlighters.ventriloquist.store.Ledger
 import net.nuclearlighters.ventriloquist.store.PrefsStore
 import net.nuclearlighters.ventriloquist.watch.PlaybackWatcher
@@ -47,15 +47,18 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The long-running part of Ventriloquist. Runs in the foreground (type mediaProjection), holds
  * the playback-capture consent for as long as it lives, serves the control endpoint, runs the
- * automatic house mode, and owns every change made to the box and to Music Assistant so that
- * it can put them back.
+ * automatic house mode, turns the remote's volume buttons into speaker volume while it runs,
+ * and owns every change made to the box and to Music Assistant so that it can put them back.
  *
- * All house work (watcher ticks, mode changes, Shield and Music Assistant calls) runs on one
- * worker thread, so the endpoint and the watcher never interleave.
+ * All house work (watcher ticks, starts and stops, volume, box and Music Assistant calls) runs
+ * on one worker thread, so the endpoint, the watcher and the buttons never interleave. Home
+ * Assistant notices go out on their own thread, so a slow Home Assistant delays nothing.
  */
 class VentriloquistService : Service(), ControlBackend {
 
@@ -64,17 +67,27 @@ class VentriloquistService : Service(), ControlBackend {
         Thread(r, "ventriloquist-house")
     }
     private lateinit var audio: AndroidAudioControls
-    private lateinit var latency: LatencyModule
+    private lateinit var shield: ShieldModule
     private lateinit var house: HouseSession
     private lateinit var watcher: PlaybackWatcher
     private val capture = CaptureController(TAG)
     private val streamer = VbanStreamer(capture)
+    private val ha = HaNotifier()
+    private val haWorker = Executors.newSingleThreadExecutor { r -> Thread(r, "ventriloquist-ha") }
     private val machine = HouseStateMachine(object : HouseClock {
         override fun nowMs(): Long = SystemClock.elapsedRealtime()
         override fun minuteOfDay(): Int = LocalTime.now().let { it.hour * 60 + it.minute }
     })
     private var server: HttpServer? = null
     private var lastLeftoverAttempt = 0L
+
+    /** Read by the volume-key service on the main thread: house mode runs and wants the keys. */
+    @Volatile
+    private var takesVolumeKeys = false
+    private val pendingSteps = AtomicInteger(0)
+    private val volumeScheduled = AtomicBoolean(false)
+    private var knownVolume: Int? = null
+    private var knownVolumeAt = 0L
 
     @Volatile
     private var projection: MediaProjection? = null
@@ -97,14 +110,14 @@ class VentriloquistService : Service(), ControlBackend {
         super.onCreate()
         audio = AndroidAudioControls(this)
         val ledgers = PrefsStore.open(this, LEDGER_FILE)
-        latency = LatencyModule(audio, Ledger(ledgers, "shield"))
-        house = HouseSession(latency, Ledger(ledgers, "music_assistant"), { c -> MaClient(c.maUrl, c.maToken) }, streamer)
+        shield = ShieldModule(audio, Ledger(ledgers, "shield"))
+        house = HouseSession(shield, Ledger(ledgers, "music_assistant"), { c -> MaClient(c.maUrl, c.maToken) }, streamer)
         startForegroundCompat()
-        if (latency.dirty) {
-            // A previous run did not finish its restore (crash, kill, power loss). The Shield
-            // side goes back at once; Music Assistant follows on the worker (network).
-            val leftovers = latency.originals()
-            val errors = latency.restore()
+        if (shield.dirty) {
+            // A previous run did not finish its restore (crash, kill, power loss). The box goes
+            // back at once (the TV gets its sound); Music Assistant follows on the worker.
+            val leftovers = shield.originals()
+            val errors = shield.restore()
             Log.w(TAG, "restored after an unclean stop: $leftovers; errors: $errors")
             if (errors.isNotEmpty()) lastError = "restore at start: ${errors.joinToString("; ")}"
         }
@@ -159,6 +172,7 @@ class VentriloquistService : Service(), ControlBackend {
         shutdown()
         instance = null
         worker.shutdownNow()
+        haWorker.shutdown()
         super.onDestroy()
     }
 
@@ -168,15 +182,18 @@ class VentriloquistService : Service(), ControlBackend {
         if (shutDown) return
         shutDown = true
         watcher.stop()
+        takesVolumeKeys = false
         val errors = try {
             runOnWorker {
-                machine.setOverride(ModeOverride.OFF, Timing.of(ConfigStore.get(this)))
+                val wasRunning = house.running
                 machine.stopped()
-                house.stop(ConfigStore.get(this))
+                val errors = house.stop(ConfigStore.get(this))
+                if (wasRunning) notifyHa(false, "service stopped")
+                errors
             }
         } catch (e: Exception) {
             capture.stopAll()
-            latency.restore() + "worker: ${e.message}"
+            shield.restore() + "worker: ${e.message}"
         }
         if (errors.isNotEmpty()) Log.e(TAG, "restore at stop: $errors")
         server?.stop()
@@ -207,29 +224,68 @@ class VentriloquistService : Service(), ControlBackend {
     /** Feeds the watcher's view to the state machine and carries out its decision. Worker only. */
     private fun tick() {
         val config = ConfigStore.get(this)
-        val timing = Timing.of(config)
+        val rules = Rules.of(config)
         machine.screen(watcher.screenOn)
-        machine.observe(watcher.snapshot(config))
-        machine.evaluate(timing) { mode -> houseBlock(mode, config) }?.let { execute(it, config) }
-        if (machine.running == null) cleanUpLeftovers(force = false)
+        machine.observe(watcher.snapshot())
+        val quietBefore = machine.inQuietHours(rules)
+        machine.evaluate(rules) { houseBlock(config) }?.let { execute(it, config, quietBefore) }
+        takesVolumeKeys = house.running && config.volumeKeys
+        if (!machine.running) cleanUpLeftovers(force = false)
     }
 
-    private fun execute(action: Action, config: Config) {
+    private fun execute(action: Action, config: Config, quiet: Boolean) {
         Log.i(TAG, "house: $action (observed ${machine.observation})")
         when (action) {
-            is Action.Start -> startHouse(action.mode, config)
-            is Action.Switch -> startHouse(action.mode, config)
-            Action.Stop -> {
-                val errors = house.stop(config)
-                if (errors.isNotEmpty()) lastError = "stop: ${errors.joinToString("; ")}"
-            }
+            Action.START -> startHouse(config)
+            Action.STOP -> stopHouse(
+                config,
+                when {
+                    quiet -> "quiet hours"
+                    !config.enabled -> "switched to the TV speakers"
+                    !machine.screenOn -> "screen off"
+                    else -> "playback ended"
+                },
+            )
         }
         updateNotification()
     }
 
-    /** Why [mode] cannot start now, or null; checked before any attempt so nothing churns. */
-    private fun houseBlock(mode: HouseMode, config: Config): String? {
-        val missing = config.missingForHouse(film = mode == HouseMode.FILM)
+    /** Stops house mode (or cleans up leftovers); returns the failures, also kept in lastError. */
+    private fun stopHouse(config: Config, reason: String): List<String> {
+        takesVolumeKeys = false
+        val wasRunning = house.running
+        val errors = house.stop(config)
+        if (errors.isNotEmpty()) lastError = "stop: ${errors.joinToString("; ")}"
+        if (wasRunning) notifyHa(false, reason)
+        return errors
+    }
+
+    /** Tells Home Assistant (when a webhook is configured) on its own thread; never blocks. */
+    private fun notifyHa(house: Boolean, reason: String) {
+        val config = ConfigStore.get(this)
+        if (config.haWebhookUrl.isEmpty()) return
+        val event = linkedMapOf<String, Any?>(
+            "event" to if (house) "house_started" else "house_stopped",
+            "house" to house,
+            "player" to config.playerId,
+            "reason" to reason,
+        )
+        try {
+            haWorker.execute {
+                // one retry: a Home Assistant restart takes longer, its own poll covers that
+                if (!ha.post(config.haWebhookUrl, event)) {
+                    Thread.sleep(HA_RETRY_MS)
+                    ha.post(config.haWebhookUrl, event)
+                }
+            }
+        } catch (e: RejectedExecutionException) {
+            // shutting down
+        }
+    }
+
+    /** Why house mode cannot start now, or null; checked before any attempt so nothing churns. */
+    private fun houseBlock(config: Config): String? {
+        val missing = config.missingForHouse()
         if (missing.isNotEmpty()) return "not configured: ${missing.joinToString(", ")}"
         if (projection == null) return "capture consent needed"
         val access = captureAccess()
@@ -251,25 +307,79 @@ class VentriloquistService : Service(), ControlBackend {
         return if (mode == AppOpsManager.MODE_ALLOWED) ACCESS_GRANTED else ACCESS_NEEDS_VISIBLE_START
     }
 
-    private fun startHouse(mode: HouseMode, config: Config) {
+    private fun startHouse(config: Config) {
         if (projection == null) {
             machine.startFailed()
             lastError = "house mode not started: capture consent needed"
             return
         }
         try {
-            house.start(mode, config)
+            house.start(config)
             lastError = null
+            knownVolume = null
+            notifyHa(true, if (machine.manual) "started by hand" else "playback")
         } catch (e: Exception) {
             machine.startFailed()
-            lastError = "house mode $mode failed: ${e.javaClass.simpleName}: ${e.message}"
+            lastError = "house mode failed: ${e.javaClass.simpleName}: ${e.message}"
             Log.e(TAG, lastError!!, e)
         }
     }
 
+    // --- volume buttons ---------------------------------------------------------------------
+
+    /** For the volume-key service (main thread): whether to take the buttons now. */
+    fun takesVolumeKeys(): Boolean = takesVolumeKeys
+
+    /**
+     * A volume button press (+1 up, -1 down; key repeats count too). Presses are gathered for
+     * a moment and sent as one change, so holding a button does not queue a call per repeat.
+     */
+    fun volumeKey(steps: Int) {
+        pendingSteps.addAndGet(steps)
+        if (!volumeScheduled.compareAndSet(false, true)) return
+        try {
+            worker.schedule({
+                volumeScheduled.set(false)
+                val n = pendingSteps.getAndSet(0)
+                if (n != 0) {
+                    try {
+                        val level = applyVolume(n)
+                        toast(volumeText(level, ConfigStore.get(this)))
+                    } catch (e: Exception) {
+                        lastError = "volume: ${e.javaClass.simpleName}: ${e.message}"
+                        toast(getString(R.string.volume_failed))
+                    }
+                }
+            }, VOLUME_GATHER_MS, TimeUnit.MILLISECONDS)
+        } catch (e: RejectedExecutionException) {
+            volumeScheduled.set(false)
+        }
+    }
+
+    /** Worker only. Returns the new level, or null when house mode is not running. */
+    private fun applyVolume(steps: Int): Int? {
+        val config = ConfigStore.get(this)
+        val now = SystemClock.elapsedRealtime()
+        val known = if (now - knownVolumeAt < VOLUME_KNOWN_MS) knownVolume else null
+        val level = house.nudgeVolume(steps, config, known)
+        knownVolume = level
+        knownVolumeAt = now
+        return level
+    }
+
+    private fun volumeText(level: Int?, config: Config): String = when {
+        level == null -> getString(R.string.volume_not_playing)
+        level >= config.maxVolume -> getString(R.string.volume_level_max, level)
+        else -> getString(R.string.volume_level, level)
+    }
+
+    private fun toast(text: String) {
+        main.post { Toast.makeText(applicationContext, text, Toast.LENGTH_SHORT).show() }
+    }
+
     /** Retries what a crashed run or a failed stop left in Music Assistant, at most once a minute. */
     private fun cleanUpLeftovers(force: Boolean) {
-        if (!house.maDirty || house.mode != null) return
+        if (!house.maDirty || house.running) return
         val now = SystemClock.elapsedRealtime()
         if (!force && now - lastLeftoverAttempt < LEFTOVER_RETRY_MS) return
         lastLeftoverAttempt = now
@@ -337,9 +447,11 @@ class VentriloquistService : Service(), ControlBackend {
         capture.projection = null
         consent = CONSENT_NEEDED
         post {
-            if (house.mode != null) {
+            if (house.running) {
                 machine.stopped()
+                takesVolumeKeys = false
                 val errors = house.stop(ConfigStore.get(this))
+                notifyHa(false, "capture consent lost")
                 lastError = "capture consent lost; house mode stopped" +
                     if (errors.isEmpty()) "" else ": ${errors.joinToString("; ")}"
             }
@@ -397,7 +509,7 @@ class VentriloquistService : Service(), ControlBackend {
         )
         val text = getString(
             when {
-                ::house.isInitialized && house.mode != null -> R.string.notification_house
+                ::house.isInitialized && house.running -> R.string.notification_house
                 projection != null -> R.string.notification_ready
                 else -> R.string.notification_idle
             },
@@ -415,8 +527,9 @@ class VentriloquistService : Service(), ControlBackend {
     override fun controlToken(): String = ConfigStore.get(this).controlToken
 
     override fun status(): Map<String, Any?> {
-        val reading = latency.readLatency()
+        val reading = shield.readLatency()
         val config = ConfigStore.get(this)
+        val rules = Rules.of(config)
         val sender = streamer.sender
         return linkedMapOf(
             "app" to "ventriloquist",
@@ -428,28 +541,28 @@ class VentriloquistService : Service(), ControlBackend {
                 "record_audio" to granted(Manifest.permission.RECORD_AUDIO),
                 "write_secure_settings" to granted(Manifest.permission.WRITE_SECURE_SETTINGS),
                 "notification_listener" to watcher.listenerGranted,
+                "volume_keys_service" to VolumeKeyService.connected,
             ),
-            "mode" to (house.mode?.name?.lowercase() ?: "idle"),
-            "override" to machine.override.name.lowercase(),
+            "mode" to if (house.running) "house" else "idle",
+            "house" to house.running,
+            "enabled" to config.enabled,
+            "manual" to machine.manual,
             "target" to house.target,
-            "hdmi_latency_ms" to reading.ms,
-            "hdmi_latency_raw" to reading.raw,
-            "film_latency_ms" to config.filmLatencyMs,
+            "volume" to knownVolume,
+            "takes_volume_keys" to takesVolumeKeys,
+            "box_muted" to shield.boxMuted,
+            "stream_muted" to audio.musicMuted(),
             "hdmi_volume" to audio.musicVolume(),
             "hdmi_volume_max" to audio.musicVolumeMax(),
-            "volume_fixed" to audio.volumeFixed(),
             "surround_setting" to audio.surroundSetting(),
-            "stream_muted" to audio.musicMuted(),
-            "tv_muted" to latency.tvMuted,
-            "tv_mute" to latency.lastMute?.toMap(),
-            "dirty" to (latency.dirty || house.maDirty),
-            "originals" to latency.originals(),
+            "hdmi_latency_ms" to reading.ms,
+            "dirty" to (shield.dirty || house.maDirty),
+            "originals" to shield.originals(),
             "watcher" to linkedMapOf(
                 "activity" to machine.observation.activity.name.lowercase(),
-                "kind" to machine.observation.kind.name.lowercase(),
                 "package" to machine.observation.packageName,
                 "screen_on" to machine.screenOn,
-                "quiet_hours" to machine.inQuietHours(Timing.of(config)),
+                "quiet_hours" to machine.inQuietHours(rules),
                 "blocked" to machine.blocked,
             ),
             "capture" to linkedMapOf(
@@ -472,37 +585,13 @@ class VentriloquistService : Service(), ControlBackend {
                 "originals" to house.maOriginals(),
                 "last_error" to house.lastMaError,
             ),
+            "home_assistant" to linkedMapOf(
+                "webhook" to config.haWebhookUrl.isNotEmpty(),
+                "last_error" to ha.lastError,
+            ),
             "last_error" to lastError,
             "config" to config.toMap(redactSecrets = true),
         )
-    }
-
-    override fun readLatency(): Map<String, Any?> = runOnWorker {
-        val r = latency.readLatency()
-        linkedMapOf("hdmi_latency_ms" to r.ms, "raw" to r.raw)
-    }
-
-    override fun setLatency(ms: Int): Map<String, Any?> = runOnWorker {
-        val r = latency.setLatency(ms)
-        linkedMapOf(
-            "requested_ms" to ms,
-            "read_back_ms" to r.ms,
-            "raw" to r.raw,
-            "accepted" to (r.ms == ms),
-            "original_ms" to latency.originals()[LatencyModule.K_LATENCY],
-        )
-    }
-
-    override fun setTvMute(on: Boolean): Map<String, Any?> = runOnWorker {
-        val originals = latency.originals()
-        val result = latency.setTvMuted(on)
-        Log.i(TAG, "tv-mute $on: ${result.attempts.joinToString(" | ")}; volume ${result.volume}, muted ${result.muted}")
-        LinkedHashMap(result.toMap()).apply {
-            put("hdmi_volume_max", audio.musicVolumeMax())
-            put("volume_fixed", audio.volumeFixed())
-            put("original_volume", originals[LatencyModule.K_VOLUME] ?: latency.originals()[LatencyModule.K_VOLUME])
-            put("original_muted", originals[LatencyModule.K_MUTED] ?: latency.originals()[LatencyModule.K_MUTED])
-        }
     }
 
     override fun captureTest(seconds: Int): Map<String, Any?> {
@@ -517,41 +606,45 @@ class VentriloquistService : Service(), ControlBackend {
         return linkedMapOf(
             "seconds" to seconds,
             "levels" to levels.toMap(),
-            "hdmi_volume" to audio.musicVolume(),
-            "tv_muted" to latency.tvMuted,
-            "house_mode" to (house.mode?.name?.lowercase() ?: "idle"),
+            "stream_muted" to audio.musicMuted(),
+            "house" to house.running,
             "capture_access" to access,
         )
     }
 
     override fun restore(): Map<String, Any?> = runOnWorker {
         val config = ConfigStore.get(this)
-        val before = linkedMapOf("shield" to latency.originals(), "music_assistant" to house.maOriginals())
-        machine.setOverride(ModeOverride.OFF, Timing.of(config))
+        val before = linkedMapOf("shield" to shield.originals(), "music_assistant" to house.maOriginals())
         machine.stopped()
-        val errors = house.stop(config)
-        if (errors.isNotEmpty()) lastError = "restore: ${errors.joinToString("; ")}"
+        val errors = stopHouse(config, "restore requested")
         updateNotification()
         linkedMapOf(
             "restored" to before,
             "errors" to errors,
-            "dirty" to (latency.dirty || house.maDirty),
-            "override" to machine.override.name.lowercase(),
+            "dirty" to (shield.dirty || house.maDirty),
         )
     }
 
     override fun setMode(mode: String): Map<String, Any?> = runOnWorker {
-        val config = ConfigStore.get(this)
-        val timing = Timing.of(config)
-        val o = ModeOverride.valueOf(mode.uppercase())
-        if (!machine.setOverride(o, timing)) {
-            throw ApiException(409, "quiet hours (${config.quietStart} to ${config.quietEnd}): manual start refused")
+        when (mode) {
+            "auto", "off" -> {
+                ConfigStore.update(this, mapOf("enabled" to (mode == "auto")))
+                machine.stopNow()
+            }
+            "on" -> {
+                val config = ConfigStore.get(this)
+                if (!machine.startNow(Rules.of(config))) {
+                    throw ApiException(409, "quiet hours (${config.quietStart} to ${config.quietEnd}): manual start refused")
+                }
+            }
+            else -> throw IllegalArgumentException("unknown mode $mode")
         }
         lastError = null
         tick()
         linkedMapOf(
-            "override" to machine.override.name.lowercase(),
-            "mode" to (house.mode?.name?.lowercase() ?: "idle"),
+            "enabled" to ConfigStore.get(this).enabled,
+            "manual" to machine.manual,
+            "house" to house.running,
             "target" to house.target,
             "blocked" to machine.blocked,
             "last_error" to lastError,
@@ -564,16 +657,22 @@ class VentriloquistService : Service(), ControlBackend {
         return linkedMapOf("updated" to update.keys.sorted(), "config" to merged.toMap(redactSecrets = true))
     }
 
-    override fun stepLatency(deltaMs: Int): Map<String, Any?> = runOnWorker {
-        val current = ConfigStore.get(this).filmLatencyMs
-        val next = (current + deltaMs).coerceIn(0, Config.MAX_LATENCY_MS)
-        ConfigStore.update(this, mapOf("film_latency_ms" to next.toLong()))
-        val reading = house.applyFilmLatency(next)
-        linkedMapOf(
-            "film_latency_ms" to next,
-            "previous_ms" to current,
-            "applied" to (reading != null),
-            "read_back_ms" to reading?.ms,
+    override fun nudgeVolume(steps: Int): Map<String, Any?> = runOnWorker {
+        val level = applyVolume(steps)
+        linkedMapOf("house" to house.running, "volume" to level, "steps" to steps)
+    }
+
+    override fun players(): Map<String, Any?> {
+        val config = ConfigStore.get(this)
+        if (config.maUrl.isEmpty() || config.maToken.isEmpty()) {
+            throw IllegalStateException("not configured: ma_url, ma_token")
+        }
+        val players = MaClient(config.maUrl, config.maToken).players()
+        return linkedMapOf(
+            "players" to players.map {
+                linkedMapOf("id" to it.id, "name" to it.name, "group" to it.group, "available" to it.available)
+            },
+            "selected" to config.playerId,
         )
     }
 
@@ -602,6 +701,9 @@ class VentriloquistService : Service(), ControlBackend {
         const val WORKER_TIMEOUT_S = 90L
         const val TICK_MS = 1000L
         const val LEFTOVER_RETRY_MS = 60_000L
+        const val HA_RETRY_MS = 2_000L
+        const val VOLUME_GATHER_MS = 120L
+        const val VOLUME_KNOWN_MS = 5_000L
 
         const val ACTION_START = "net.nuclearlighters.ventriloquist.action.START"
         const val ACTION_STOP = "net.nuclearlighters.ventriloquist.action.STOP"

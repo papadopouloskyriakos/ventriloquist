@@ -25,7 +25,7 @@ object ConfigStore {
             val store = PrefsStore.open(context.applicationContext, FILE)
             val loaded = store.get(KEY)?.let { text ->
                 try {
-                    Config().merge(Json.parseObject(text))
+                    Config().merge(Config.migrate(Json.parseObject(text)))
                 } catch (e: IllegalArgumentException) {
                     Log.w(TAG, "stored configuration rejected, using defaults: ${e.message}")
                     null

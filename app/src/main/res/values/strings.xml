@@ -2,11 +2,61 @@
 <resources>
     <string name="app_name">Ventriloquist</string>
     <string name="notification_channel">Ventriloquist</string>
-    <string name="notification_idle">Idle. Capture consent needed.</string>
-    <string name="notification_ready">Idle. Capture consent held; nothing is sent.</string>
-    <string name="notification_house">House mode: sending TV audio.</string>
-    <string name="status_starting">Ventriloquist %1$s\n\nStarting the service.</string>
-    <string name="status_template">Ventriloquist %1$s\n\nCapture consent: %2$s\nCapture access: %3$s\nMode: %4$s\nCapturing: %5$s\nHDMI latency: %6$s ms\nHDMI volume: %7$s\nChanges to restore: %8$s\nLast error: %9$s\n\nPress OK to ask for the capture consent, or to re-arm capture access.</string>
-    <string name="yes">yes</string>
-    <string name="no">no</string>
+    <string name="notification_idle">Idle. Capture permission needed.</string>
+    <string name="notification_ready">Ready. The home speakers take over when something plays.</string>
+    <string name="notification_house">Playing on the home speakers.</string>
+
+    <string name="state_starting">Starting…</string>
+    <string name="state_playing">Playing on the home speakers: %1$s</string>
+    <string name="state_ready">Home speakers: %1$s</string>
+    <string name="state_tv">TV speakers</string>
+    <string name="detail_keys">The remote\'s volume buttons control the speakers.</string>
+    <string name="detail_tv">The home speakers are not used. Choose Sound to change it.</string>
+    <string name="detail_ready">They take over a few seconds after something starts playing.</string>
+    <string name="detail_quiet">Quiet hours: the TV keeps its own speakers until %1$s.</string>
+    <string name="detail_blocked">Waiting: %1$s</string>
+
+    <string name="row_format">%1$s:  %2$s</string>
+    <string name="row_sound">Sound</string>
+    <string name="row_speakers">Speakers</string>
+    <string name="row_keys">Volume buttons</string>
+    <string name="row_step">Volume step</string>
+    <string name="row_max">Maximum volume</string>
+    <string name="row_tv">TV sound while the speakers play</string>
+    <string name="row_quiet">Quiet hours (TV speakers only)</string>
+    <string name="row_stop">Back to the TV after playback stops</string>
+    <string name="row_consent">Capture permission</string>
+
+    <string name="sound_home">Home speakers</string>
+    <string name="sound_tv">TV speakers</string>
+    <string name="sound_home_long">Home speakers, whenever something plays</string>
+    <string name="sound_tv_long">TV speakers only</string>
+    <string name="speakers_unset">not chosen</string>
+    <string name="player_group">%1$s (group)</string>
+    <string name="player_unavailable">%1$s (offline)</string>
+    <string name="keys_speakers">speakers, while they play</string>
+    <string name="keys_tv">TV only</string>
+    <string name="keys_speakers_long">Control the speakers while they play</string>
+    <string name="keys_tv_long">Always control the TV</string>
+    <string name="tv_muted">muted</string>
+    <string name="tv_on">on</string>
+    <string name="tv_muted_long">Muted (sound only from the speakers)</string>
+    <string name="tv_on_long">On (the TV plays too, a few seconds earlier)</string>
+    <string name="quiet_range">%1$s to %2$s</string>
+    <string name="quiet_off">off</string>
+    <string name="consent_ok">granted</string>
+    <string name="consent_needed">needed, press OK</string>
+    <string name="percent">%1$d %%</string>
+    <string name="minutes">%1$d min</string>
+    <string name="seconds">%1$d s</string>
+    <string name="none">none</string>
+    <string name="footer">Version %1$s. Music Assistant: %2$s. Last error: %3$s.</string>
+
+    <string name="volume_level">Speakers %1$d %%</string>
+    <string name="volume_level_max">Speakers %1$d %% (maximum)</string>
+    <string name="volume_not_playing">The speakers are not playing</string>
+    <string name="volume_failed">Speaker volume: no answer from Music Assistant</string>
+
+    <string name="volume_keys_label">Ventriloquist volume buttons</string>
+    <string name="volume_keys_description">While the home speakers play the TV\'s sound, the remote\'s volume buttons control the speakers. At all other times they are left alone. Reads no screen content.</string>
 </resources>

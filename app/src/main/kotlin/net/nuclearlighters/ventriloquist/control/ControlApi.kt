@@ -12,20 +12,20 @@ interface ControlBackend {
     fun controlToken(): String
 
     fun status(): Map<String, Any?>
-    fun readLatency(): Map<String, Any?>
-    fun setLatency(ms: Int): Map<String, Any?>
-    fun setTvMute(on: Boolean): Map<String, Any?>
     fun captureTest(seconds: Int): Map<String, Any?>
     fun restore(): Map<String, Any?>
 
-    /** Override: "auto", "off", "film" or "music". */
+    /** "auto" (home speakers, stored), "off" (TV speakers, stored) or "on" (start now). */
     fun setMode(mode: String): Map<String, Any?>
 
     /** Same keys as the configuration broadcast. */
     fun configure(update: Map<String, Any?>): Map<String, Any?>
 
-    /** Moves film_latency_ms by [deltaMs] (stored; applied at once in film mode). */
-    fun stepLatency(deltaMs: Int): Map<String, Any?>
+    /** Moves the speakers' volume by [steps] volume steps while house mode runs. */
+    fun nudgeVolume(steps: Int): Map<String, Any?>
+
+    /** The players and groups Music Assistant offers. */
+    fun players(): Map<String, Any?>
 }
 
 /** A request the backend refuses, with the HTTP status to answer. */
@@ -67,9 +67,7 @@ class ControlApi(private val backend: ControlBackend) {
         if (r.method !in known) return error(405, "use ${known.joinToString(" or ")}")
         return when ("${r.method} ${r.path}") {
             "GET /status" -> ok(backend.status())
-            "GET /latency" -> ok(backend.readLatency())
-            "POST /latency" -> ok(backend.setLatency(intField(body(r), "ms", 0..MAX_LATENCY_MS)))
-            "POST /tv-mute" -> ok(backend.setTvMute(boolField(body(r), "on")))
+            "GET /players" -> ok(backend.players())
             "POST /capture-test" ->
                 ok(backend.captureTest(intField(body(r), "seconds", 1..MAX_CAPTURE_TEST_S)))
             "POST /restore" -> ok(backend.restore())
@@ -83,27 +81,24 @@ class ControlApi(private val backend: ControlBackend) {
                 if (update.isEmpty()) throw IllegalArgumentException("send a JSON object with configuration keys")
                 ok(backend.configure(update))
             }
-            "POST /latency/step" ->
-                ok(backend.stepLatency(intField(body(r), "ms", -MAX_LATENCY_STEP_MS..MAX_LATENCY_STEP_MS)))
+            "POST /volume" -> ok(backend.nudgeVolume(intField(body(r), "steps", -MAX_VOLUME_STEPS..MAX_VOLUME_STEPS)))
             else -> error(404, "no such endpoint")
         }
     }
 
     companion object {
-        const val MAX_LATENCY_MS = 5000
         const val MAX_CAPTURE_TEST_S = 30
-        const val MAX_LATENCY_STEP_MS = 1000
-        val MODES = listOf("auto", "off", "film", "music")
+        const val MAX_VOLUME_STEPS = 10
+        val MODES = listOf("auto", "off", "on")
 
         val ROUTES: Map<String, Set<String>> = mapOf(
             "/status" to setOf("GET"),
-            "/latency" to setOf("GET", "POST"),
-            "/tv-mute" to setOf("POST"),
+            "/players" to setOf("GET"),
             "/capture-test" to setOf("POST"),
             "/restore" to setOf("POST"),
             "/mode" to setOf("POST"),
             "/config" to setOf("POST"),
-            "/latency/step" to setOf("POST"),
+            "/volume" to setOf("POST"),
         )
 
         fun authorized(header: String?, token: String): Boolean {
@@ -131,9 +126,6 @@ class ControlApi(private val backend: ControlBackend) {
             }
             return v.toInt()
         }
-
-        fun boolField(body: Map<String, Any?>, name: String): Boolean =
-            body[name] as? Boolean ?: throw IllegalArgumentException("'$name' must be true or false")
 
         fun stringField(body: Map<String, Any?>, name: String): String =
             body[name] as? String ?: throw IllegalArgumentException("'$name' must be a string")

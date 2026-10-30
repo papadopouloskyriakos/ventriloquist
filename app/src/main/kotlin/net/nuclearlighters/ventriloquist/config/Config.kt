@@ -3,7 +3,7 @@ package net.nuclearlighters.ventriloquist.config
 /**
  * Everything the app needs to know about its surroundings. Nothing here has a site-specific
  * default: addresses, tokens and player ids are set at provisioning time, through the ADB
- * configuration broadcast or the token-protected `POST /config`.
+ * configuration broadcast, the token-protected `POST /config`, or the settings screen.
  *
  * JSON keys are the snake_case names in [KEYS]. A merge is all or nothing: one bad value
  * rejects the whole update.
@@ -13,21 +13,24 @@ data class Config(
     val maUrl: String = "",
     val maToken: String = "",
     val sourceUri: String = "",
-    val filmPlayerId: String = "",
-    val musicPlayerId: String = "",
-    val surroundPlayerIds: List<String> = emptyList(),
-    val surroundSyncAdjustMs: Int = -15,
+    val playerId: String = "",
     val vbanHost: String = "",
     val vbanPort: Int = 6980,
     val vbanStream: String = "TV",
-    val filmLatencyMs: Int = 0,
+    /** Automatic house mode: the home speakers play whatever the box plays. False: TV speakers. */
+    val enabled: Boolean = true,
     val quietStart: String = "23:00",
     val quietEnd: String = "08:00",
-    val filmPackages: List<String> = emptyList(),
-    val musicPackages: List<String> = emptyList(),
     val startDebounceS: Int = 3,
     val stopDelayS: Int = 180,
-    val tvMute: Boolean = true,
+    /** Mute the box's own media output while the home speakers play: the TV gets silence. */
+    val muteBox: Boolean = true,
+    /** The remote's volume buttons drive the home speakers while they play. */
+    val volumeKeys: Boolean = true,
+    val volumeStep: Int = 2,
+    val maxVolume: Int = 40,
+    /** Optional Home Assistant webhook told about every start and stop; empty for none. */
+    val haWebhookUrl: String = "",
 ) {
 
     class ConfigException(val errors: List<String>) :
@@ -45,24 +48,20 @@ data class Config(
                     "ma_url" -> c.copy(maUrl = url(raw ?: defaults.maUrl))
                     "ma_token" -> c.copy(maToken = text(raw ?: defaults.maToken, 4096))
                     "source_uri" -> c.copy(sourceUri = text(raw ?: defaults.sourceUri, 512))
-                    "film_player_id" -> c.copy(filmPlayerId = text(raw ?: defaults.filmPlayerId, 256))
-                    "music_player_id" -> c.copy(musicPlayerId = text(raw ?: defaults.musicPlayerId, 256))
-                    "surround_player_ids" ->
-                        c.copy(surroundPlayerIds = textList(raw ?: defaults.surroundPlayerIds, 256))
-                    "surround_sync_adjust_ms" ->
-                        c.copy(surroundSyncAdjustMs = int(raw ?: defaults.surroundSyncAdjustMs, -500..500))
+                    "player_id" -> c.copy(playerId = text(raw ?: defaults.playerId, 256))
                     "vban_host" -> c.copy(vbanHost = host(raw ?: defaults.vbanHost))
                     "vban_port" -> c.copy(vbanPort = int(raw ?: defaults.vbanPort, 1..65535))
                     "vban_stream" -> c.copy(vbanStream = stream(raw ?: defaults.vbanStream))
-                    "film_latency_ms" ->
-                        c.copy(filmLatencyMs = int(raw ?: defaults.filmLatencyMs, 0..MAX_LATENCY_MS))
+                    "enabled" -> c.copy(enabled = bool(raw ?: defaults.enabled))
                     "quiet_start" -> c.copy(quietStart = clock(raw ?: defaults.quietStart))
                     "quiet_end" -> c.copy(quietEnd = clock(raw ?: defaults.quietEnd))
-                    "film_packages" -> c.copy(filmPackages = textList(raw ?: defaults.filmPackages, 256))
-                    "music_packages" -> c.copy(musicPackages = textList(raw ?: defaults.musicPackages, 256))
                     "start_debounce_s" -> c.copy(startDebounceS = int(raw ?: defaults.startDebounceS, 0..600))
                     "stop_delay_s" -> c.copy(stopDelayS = int(raw ?: defaults.stopDelayS, 0..3600))
-                    "tv_mute" -> c.copy(tvMute = bool(raw ?: defaults.tvMute))
+                    "mute_box" -> c.copy(muteBox = bool(raw ?: defaults.muteBox))
+                    "volume_keys" -> c.copy(volumeKeys = bool(raw ?: defaults.volumeKeys))
+                    "volume_step" -> c.copy(volumeStep = int(raw ?: defaults.volumeStep, 1..10))
+                    "max_volume" -> c.copy(maxVolume = int(raw ?: defaults.maxVolume, 1..100))
+                    "ha_webhook_url" -> c.copy(haWebhookUrl = url(raw ?: defaults.haWebhookUrl))
                     else -> throw IllegalArgumentException("unknown key")
                 }
             } catch (e: IllegalArgumentException) {
@@ -79,31 +78,30 @@ data class Config(
         "ma_url" to maUrl,
         "ma_token" to secret(maToken, redactSecrets),
         "source_uri" to sourceUri,
-        "film_player_id" to filmPlayerId,
-        "music_player_id" to musicPlayerId,
-        "surround_player_ids" to surroundPlayerIds,
-        "surround_sync_adjust_ms" to surroundSyncAdjustMs,
+        "player_id" to playerId,
         "vban_host" to vbanHost,
         "vban_port" to vbanPort,
         "vban_stream" to vbanStream,
-        "film_latency_ms" to filmLatencyMs,
+        "enabled" to enabled,
         "quiet_start" to quietStart,
         "quiet_end" to quietEnd,
-        "film_packages" to filmPackages,
-        "music_packages" to musicPackages,
         "start_debounce_s" to startDebounceS,
         "stop_delay_s" to stopDelayS,
-        "tv_mute" to tvMute,
+        "mute_box" to muteBox,
+        "volume_keys" to volumeKeys,
+        "volume_step" to volumeStep,
+        "max_volume" to maxVolume,
+        // the webhook id in the URL is the webhook's only credential
+        "ha_webhook_url" to secret(haWebhookUrl, redactSecrets),
     )
 
     /** Keys that must be set before house mode can run; empty when ready. */
-    fun missingForHouse(film: Boolean): List<String> = buildList {
+    fun missingForHouse(): List<String> = buildList {
         if (maUrl.isEmpty()) add("ma_url")
         if (maToken.isEmpty()) add("ma_token")
         if (sourceUri.isEmpty()) add("source_uri")
         if (vbanHost.isEmpty()) add("vban_host")
-        if (film && filmPlayerId.isEmpty()) add("film_player_id")
-        if (!film && musicPlayerId.isEmpty()) add("music_player_id")
+        if (playerId.isEmpty()) add("player_id")
     }
 
     /** Quiet start as minutes after midnight. */
@@ -113,9 +111,30 @@ data class Config(
     val quietEndMinute: Int get() = minuteOfDay(quietEnd)
 
     companion object {
-        const val MAX_LATENCY_MS = 5000
-
         val KEYS: List<String> = Config().toMap(false).keys.toList()
+
+        /** Keys of 0.3 (film mode) that a stored configuration may still hold. */
+        val RETIRED_KEYS = setOf(
+            "film_player_id", "surround_player_ids", "surround_sync_adjust_ms", "film_latency_ms",
+            "film_packages", "music_packages", "tv_mute",
+        )
+
+        /**
+         * Turns a stored configuration of an older version into one [merge] accepts: the music
+         * player becomes the player, film keys are dropped. Unknown keys stay, so a damaged
+         * store is still reported.
+         */
+        fun migrate(stored: Map<String, Any?>): Map<String, Any?> {
+            val out = LinkedHashMap<String, Any?>()
+            for ((key, value) in stored) {
+                when {
+                    key == "music_player_id" -> if (!stored.containsKey("player_id")) out["player_id"] = value
+                    key in RETIRED_KEYS -> Unit
+                    else -> out[key] = value
+                }
+            }
+            return out
+        }
 
         fun minuteOfDay(hhmm: String): Int {
             val parts = hhmm.split(':')
@@ -186,17 +205,6 @@ data class Config(
         private fun bool(raw: Any): Boolean {
             require(raw is Boolean) { "expected true or false" }
             return raw
-        }
-
-        private fun textList(raw: Any, maxItem: Int): List<String> {
-            require(raw is List<*>) { "expected a list of strings" }
-            require(raw.size <= 64) { "at most 64 entries" }
-            return raw.map {
-                require(it is String && it.isNotBlank() && it.length <= maxItem) {
-                    "expected non-empty strings"
-                }
-                it.trim()
-            }
         }
     }
 }

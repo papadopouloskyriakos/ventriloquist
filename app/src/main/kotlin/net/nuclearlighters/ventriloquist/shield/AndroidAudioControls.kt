@@ -29,11 +29,11 @@ class AndroidAudioControls(context: Context) : AudioControls {
     )
 
     override fun surroundSetting(): String? =
-        Settings.Global.getString(resolver, LatencyModule.SURROUND_KEY)
+        Settings.Global.getString(resolver, ShieldModule.SURROUND_KEY)
 
     override fun setSurroundSetting(value: String?) {
-        if (!Settings.Global.putString(resolver, LatencyModule.SURROUND_KEY, value)) {
-            throw IllegalStateException("Settings.Global refused ${LatencyModule.SURROUND_KEY}")
+        if (!Settings.Global.putString(resolver, ShieldModule.SURROUND_KEY, value)) {
+            throw IllegalStateException("Settings.Global refused ${ShieldModule.SURROUND_KEY}")
         }
     }
 

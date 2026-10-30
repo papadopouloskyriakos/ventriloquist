@@ -14,13 +14,12 @@ import android.os.Build
 import android.os.Handler
 import android.os.PowerManager
 import net.nuclearlighters.ventriloquist.NotificationListener
-import net.nuclearlighters.ventriloquist.config.Config
 import net.nuclearlighters.ventriloquist.house.Observation
 import net.nuclearlighters.ventriloquist.house.PlaybackClassifier
 
 /**
  * The platform inputs of the automatic mode: active media sessions (through the notification
- * listener grant), active audio players (usage and content type) and screen on or off.
+ * listener grant), active audio players (usage and state) and screen on or off.
  * [snapshot] polls; [onChange] is called on the given handler when something changed, so the
  * caller can evaluate at once instead of at its next tick.
  */
@@ -77,7 +76,7 @@ class PlaybackWatcher(private val context: Context, private val onChange: () -> 
         }
     }
 
-    fun snapshot(config: Config): Observation {
+    fun snapshot(): Observation {
         val active = try {
             sessions.getActiveSessions(listener).also { listenerGranted = true }
         } catch (e: SecurityException) {
@@ -92,11 +91,10 @@ class PlaybackWatcher(private val context: Context, private val onChange: () -> 
             PlaybackClassifier.Player(
                 media = attributes.usage == AudioAttributes.USAGE_MEDIA ||
                     attributes.usage == AudioAttributes.USAGE_GAME,
-                content = content(attributes.contentType),
                 started = started(c),
             )
         }
-        return PlaybackClassifier.observe(sessionList, players, config)
+        return PlaybackClassifier.observe(sessionList, players)
     }
 
     companion object {
@@ -112,13 +110,6 @@ class PlaybackWatcher(private val context: Context, private val onChange: () -> 
             -> PlaybackClassifier.SessionState.PLAYING
             PlaybackState.STATE_PAUSED -> PlaybackClassifier.SessionState.PAUSED
             else -> PlaybackClassifier.SessionState.OTHER
-        }
-
-        fun content(type: Int): PlaybackClassifier.Content = when (type) {
-            AudioAttributes.CONTENT_TYPE_MOVIE -> PlaybackClassifier.Content.MOVIE
-            AudioAttributes.CONTENT_TYPE_MUSIC -> PlaybackClassifier.Content.MUSIC
-            AudioAttributes.CONTENT_TYPE_SPEECH -> PlaybackClassifier.Content.SPEECH
-            else -> PlaybackClassifier.Content.UNKNOWN
         }
 
         /**

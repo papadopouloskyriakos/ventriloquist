@@ -61,30 +61,50 @@ class MaClientTest {
     }
 
     @Test
-    fun readsPlayerValuesFromConfigEntries() {
-        reply = { body ->
-            assertEquals("config/players/get", body["command"])
-            assertEquals(mapOf("player_id" to "sp1"), body["args"])
-            200 to """{"player_id":"sp1","values":{
-                "output_channels":{"key":"output_channels","type":"string","default_value":"stereo","value":"left"},
-                "sync_adjust":{"key":"sync_adjust","type":"integer","default_value":0,"value":null},
-                "other":{"value":1}}}"""
-        }
-        val values = client.getPlayerValues("sp1", listOf("output_channels", "sync_adjust", "missing"))
-        assertEquals(mapOf("output_channels" to "left", "sync_adjust" to 0L), values)
+    fun stops() {
+        client.stop("group1")
+        assertEquals("players/cmd/stop", seen[0].body["command"])
+        assertEquals(mapOf("player_id" to "group1"), seen[0].body["args"])
     }
 
     @Test
-    fun savesValuesAndStops() {
-        client.savePlayerValues("sp1", mapOf("output_channels" to "surround", "sync_adjust" to -15))
-        client.stop("group1")
-        assertEquals("config/players/save", seen[0].body["command"])
+    fun readsTheGroupVolumeOfAGroupAndTheVolumeOfAPlayer() {
+        reply = { body ->
+            assertEquals("players/get", body["command"])
+            when ((body["args"] as Map<*, *>)["player_id"]) {
+                "house" -> 200 to """{"player_id":"house","type":"group","group_volume":16,"volume_level":null}"""
+                else -> 200 to """{"player_id":"one","type":"player","volume_level":11,"group_volume":30}"""
+            }
+        }
+        assertEquals(16, client.volume("house"))
+        assertEquals(11, client.volume("one"))
+    }
+
+    @Test
+    fun setsTheGroupVolumeWithinRange() {
+        client.setGroupVolume("house", 120)
+        assertEquals("players/cmd/group_volume", seen[0].body["command"])
+        assertEquals(mapOf("player_id" to "house", "volume_level" to 100L), seen[0].body["args"])
+    }
+
+    @Test
+    fun listsVisiblePlayersGroupsFirst() {
+        reply = {
+            200 to """[
+                {"player_id":"b","display_name":"Kitchen","type":"player","available":true},
+                {"player_id":"g","display_name":"House","type":"group","available":true},
+                {"player_id":"h","display_name":"Hidden","type":"player","hidden":true},
+                {"player_id":"d","display_name":"Disabled","type":"player","enabled":false},
+                {"player_id":"a","name":"Attic","type":"player","available":false}]"""
+        }
         assertEquals(
-            mapOf("player_id" to "sp1", "values" to mapOf("output_channels" to "surround", "sync_adjust" to -15L)),
-            seen[0].body["args"],
+            listOf(
+                MaPlayer("g", "House", group = true, available = true),
+                MaPlayer("a", "Attic", group = false, available = false),
+                MaPlayer("b", "Kitchen", group = false, available = true),
+            ),
+            client.players(),
         )
-        assertEquals("players/cmd/stop", seen[1].body["command"])
-        assertEquals(mapOf("player_id" to "group1"), seen[1].body["args"])
     }
 
     @Test
